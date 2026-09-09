@@ -130,7 +130,7 @@ func TestProductionOverviewKeepsConferenceInNavigation(t *testing.T) {
 	if err := database.ReplaceProductionCuts("toronto", "talk-1", []db.ProductionCut{{Source: "toronto/recordings/raw/mix/main.mp4", SourceType: "video", InMS: 1000, OutMS: 2000}}); err != nil {
 		t.Fatal(err)
 	}
-	finished, _, err := database.EnqueueProductionProxyJob("toronto/recordings/raw/mix/main.mp4", "toronto/recordings/workspace/proxies/raw/mix/main.mp4")
+	finished, _, err := database.EnqueueProductionProxyJob("toronto/recordings/raw/mix/main.mp4", "toronto/recordings/workspace/raw/mix/main.proxy.mp4")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,7 @@ func TestProductionOverviewKeepsConferenceInNavigation(t *testing.T) {
 	if err := database.FinishProductionProxyJob(finished.ID, 1000); err != nil {
 		t.Fatal(err)
 	}
-	failed, _, err := database.EnqueueProductionProxyJob("toronto/recordings/raw/mix/talks.mp4", "toronto/recordings/workspace/proxies/raw/mix/talks.mp4")
+	failed, _, err := database.EnqueueProductionProxyJob("toronto/recordings/raw/mix/talks.mp4", "toronto/recordings/workspace/raw/mix/talks.proxy.mp4")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +189,7 @@ func TestProductionCutIsDedicatedPageWithTalkNavigation(t *testing.T) {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	for _, want := range []string{"Second", "Day 1", "Wed, Jan 1, 2025", "Talks", "11:00 AM–11:30 AM", "Speaker Two", "← Previous", "Skip →", "Save &amp; next →", `"inMs":1000`, `"index":1`, `"talks":[`, "Back to talks", "cutter-head", "position:sticky", "talk-meta-separator", "cutter-workspace", "grid-template-columns:minmax(0,2fr) minmax(360px,1fr)", "cutter-side", "media-preview-seek", "/production/media/info", "proxyPath", `preload="auto"`, "seekGlobal", "bindVideo", "Loading editing proxy", "sourceFilename", "selectRange", "selectRange(index,'inMs')", "selectRange(index,'outMs')", "inheritPreviewSource", "range-source", "openMedia(index)", "requestSubmit", "settledTimeMs", "initialSeekPending", "loadSource", "showTalk", "history.pushState", "currentTalk.talk_id", "Wait for the preview to finish seeking", "preview.ready", "rangeSetKey", "range[rangeSetKey(key)]=true", "if(!range){range=newRange(currentSource,currentSourceType)", "media-preview-fine", "media-preview-fine-row", "media-preview-play", "togglePlayback", "onMark:key=>mark", "fineWindowMs=5000", "seekTimeoutMs=4000", "mediaSession", "queueSeek", "setPointerCapture", "seekInFlight", "queuedSeekTarget", "recover", "node.onseeked", "seek.onpointerdown", "finishCoarse", "requestAnimationFrame", "createProductionMediaBrowser", "createProductionMediaPreview", "media-preview-mark-in", "preview.setMarks", "removeRange", "addRange", "+ New segment", "needsMedia=!inheritPreviewSource(range)", "if(needsMedia)openMedia(activeRange)", "if(!ranges.length&&currentSource)ranges.push(newRange(currentSource,currentSourceType))", "activeRange=-1", "inSet", "outSet", "file.proxyStatus==='finished'", "No prepared video files here", "maxCachedVideos=2", "preview.playing()", "Save & next →':'Save & close", "function talksURL()", "else location.href=talksURL()"} {
+	for _, want := range []string{"Second", "Day 1", "Wed, Jan 1, 2025", "Talks", "11:00 AM–11:30 AM", "Speaker Two", "← Previous", "Skip →", "Save &amp; next →", `"inMs":1000`, `"index":1`, `"talks":[`, "Back to talks", "cutter-head", "position:sticky", "talk-meta-separator", "cutter-workspace", "grid-template-columns:minmax(0,2fr) minmax(360px,1fr)", "cutter-side", "media-preview-seek", "/production/media/info", "proxyPath", `preload="auto"`, "seekGlobal", "bindVideo", "Loading editing proxy", "sourceFilename", "selectRange", "selectRange(index,'inMs')", "selectRange(index,'outMs')", "inheritPreviewSource", "range-source", "openMedia(index)", "requestSubmit", "settledTimeMs", "initialSeekPending", "loadSource", "showTalk", "history.pushState", "currentTalk.talk_id", "Wait for the preview to finish seeking", "preview.ready", "rangeSetKey", "range[rangeSetKey(key)]=true", "if(!range){range=newRange(currentSource,currentSourceType)", "media-preview-fine", "media-preview-fine-row", "media-preview-play", "togglePlayback", "onMark:key=>mark", "fineWindowMs=5000", "seekNoticeMs=4000", "mediaSession", "queueSeek", "setPointerCapture", "seekInFlight", "queuedSeekTarget", "recover", "node.onseeked", "seek.onpointerdown", "finishCoarse", "requestAnimationFrame", "createProductionMediaBrowser", "createProductionMediaPreview", "media-preview-mark-in", "preview.setMarks", "removeRange", "addRange", "+ New segment", "needsMedia=!inheritPreviewSource(range)", "if(needsMedia)openMedia(activeRange)", "if(!ranges.length&&currentSource)ranges.push(newRange(currentSource,currentSourceType))", "activeRange=-1", "inSet", "outSet", "file.proxyStatus==='finished'", "No prepared video files here", "maxCachedVideos=2", "preview.playing()", "Save & next →':'Save & close", "function talksURL()", "else location.href=talksURL()"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("cutter omitted %q: %s", want, body)
 		}
@@ -309,7 +309,7 @@ func TestMediaOpenDoesNotCacheSignedRedirect(t *testing.T) {
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	h := &Handler{Remote: "btcpp:btcpp"}
 	response := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/production/media/open?conference=toronto&path=toronto/recordings/workspace/proxies/raw/mix/talk.mp4", nil)
+	request := httptest.NewRequest(http.MethodGet, "/production/media/open?conference=toronto&path=toronto/recordings/workspace/raw/mix/talk.proxy.mp4", nil)
 
 	h.mediaOpen(response, request)
 
@@ -361,19 +361,22 @@ func TestGroupMediaFilesReturnsEmptyJSONArray(t *testing.T) {
 
 func TestProductionProxyObjectKeyMirrorsSourceDirectory(t *testing.T) {
 	source := mediaFile{Path: "toronto/recordings/raw/mix/toronto_01main_100431_0000.mp4", SourceType: "chunkedVideo"}
-	if got, want := productionProxyObjectKey("toronto", source), "toronto/recordings/workspace/proxies/raw/mix/toronto_01main_100431.mp4"; got != want {
+	if got, want := productionProxyObjectKey("toronto", source), "toronto/recordings/workspace/raw/mix/toronto_01main_100431.proxy.mp4"; got != want {
 		t.Fatalf("proxy=%q want %q", got, want)
 	}
 	standalone := mediaFile{Path: "toronto/recordings/raw/mix/talks.mp4", SourceType: "video"}
-	if got, want := productionProxyObjectKey("toronto", standalone), "toronto/recordings/workspace/proxies/raw/mix/talks.mp4"; got != want {
+	if got, want := productionProxyObjectKey("toronto", standalone), "toronto/recordings/workspace/raw/mix/talks.proxy.mp4"; got != want {
 		t.Fatalf("standalone proxy=%q want %q", got, want)
+	}
+	if got, want := productionProxySidecarObjectKey("toronto/recordings/workspace/raw/mix/talks.proxy.mp4"), "toronto/recordings/workspace/raw/mix/talks.proxy.v1.json"; got != want {
+		t.Fatalf("sidecar=%q want %q", got, want)
 	}
 }
 
 func TestLogicalMediaSourcesRecursiveGroupsChunksAndSkipsWorkspace(t *testing.T) {
 	binDir := t.TempDir()
 	rclone := filepath.Join(binDir, "rclone")
-	if err := os.WriteFile(rclone, []byte("#!/bin/sh\nprintf 'raw/mix/camera0000.mp4\\nraw/mix/camera0001.mp4\\nraw/mix/single.mov\\nworkspace/proxies/old.mp4\\nedits/talks/final.mp4\\nassets/bumper.mp4\\n'\n"), 0o700); err != nil {
+	if err := os.WriteFile(rclone, []byte("#!/bin/sh\nprintf 'raw/mix/camera0000.mp4\\nraw/mix/camera0001.mp4\\nraw/mix/single.mov\\nworkspace/old.proxy.mp4\\nedits/talks/final.mp4\\nassets/bumper.mp4\\n'\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -422,7 +425,7 @@ func TestProductionProxyTargetSourcesRejectsDerivedAndCrossConferenceMedia(t *te
 	h := &Handler{Remote: "btcpp:btcpp"}
 	for _, target := range []string{
 		"toronto/recordings/",
-		"toronto/recordings/workspace/proxies/source.mp4",
+		"toronto/recordings/workspace/source.proxy.mp4",
 		"nairobi/recordings/raw/mix/source.mp4",
 	} {
 		if _, err := h.productionProxyTargetSources(context.Background(), "toronto", target); err == nil {
@@ -469,13 +472,13 @@ func TestLogicalMediaInfoRequiresEditingProxy(t *testing.T) {
 func TestLogicalMediaInfoUsesFinishedEditingProxy(t *testing.T) {
 	binDir := t.TempDir()
 	rclone := filepath.Join(binDir, "rclone")
-	if err := os.WriteFile(rclone, []byte("#!/bin/sh\ncase \"$*\" in\n  *workspace/proxies/raw/mix*) printf 'camera.mp4\\n' ;;\n  *) printf 'camera0000.mp4\\ncamera0001.mp4\\n' ;;\nesac\n"), 0o700); err != nil {
+	if err := os.WriteFile(rclone, []byte("#!/bin/sh\ncase \"$*\" in\n  *cat*) printf '{\"version\":1,\"source\":{\"path\":\"toronto/recordings/raw/mix/camera0000.mp4\"},\"proxy\":{\"path\":\"toronto/recordings/workspace/raw/mix/camera.proxy.mp4\",\"durationMs\":930123}}' ;;\n  *workspace/raw/mix*) printf 'camera.proxy.mp4\\ncamera.proxy.v1.json\\n' ;;\n  *) printf 'camera0000.mp4\\ncamera0001.mp4\\n' ;;\nesac\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	database := productionHandlerTestDB(t)
 	source := "toronto/recordings/raw/mix/camera0000.mp4"
-	proxy := "toronto/recordings/workspace/proxies/raw/mix/camera.mp4"
+	proxy := "toronto/recordings/workspace/raw/mix/camera.proxy.mp4"
 	job, _, err := database.EnqueueProductionProxyJob(source, proxy)
 	if err != nil {
 		t.Fatal(err)
@@ -500,7 +503,7 @@ func TestLogicalMediaInfoUsesFinishedEditingProxy(t *testing.T) {
 func TestLogicalMediaInfoDiscoversEditingProxyWithoutDatabase(t *testing.T) {
 	binDir := t.TempDir()
 	rclone := filepath.Join(binDir, "rclone")
-	if err := os.WriteFile(rclone, []byte("#!/bin/sh\ncase \"$*\" in\n  *workspace/proxies/raw/mix*) printf 'camera.mp4\\n' ;;\n  *) printf 'camera0000.mp4\\ncamera0001.mp4\\n' ;;\nesac\n"), 0o700); err != nil {
+	if err := os.WriteFile(rclone, []byte("#!/bin/sh\ncase \"$*\" in\n  *cat*) printf '{\"version\":1,\"source\":{\"path\":\"toronto/recordings/raw/mix/camera0000.mp4\"},\"proxy\":{\"path\":\"toronto/recordings/workspace/raw/mix/camera.proxy.mp4\",\"durationMs\":930123}}' ;;\n  *workspace/raw/mix*) printf 'camera.proxy.mp4\\ncamera.proxy.v1.json\\n' ;;\n  *) printf 'camera0000.mp4\\ncamera0001.mp4\\n' ;;\nesac\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -509,7 +512,7 @@ func TestLogicalMediaInfoDiscoversEditingProxyWithoutDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.ProxyPath != "toronto/recordings/workspace/proxies/raw/mix/camera.mp4" || info.ProxyStatus != "finished" || info.DurationMS != 0 || info.Warning != "" {
+	if info.ProxyPath != "toronto/recordings/workspace/raw/mix/camera.proxy.mp4" || info.ProxyStatus != "finished" || info.DurationMS != 930123 || info.Warning != "" {
 		t.Fatalf("info=%+v", info)
 	}
 }
@@ -517,7 +520,7 @@ func TestLogicalMediaInfoDiscoversEditingProxyWithoutDatabase(t *testing.T) {
 func TestMediaBrowserDiscoversPreparedSourceWithoutDatabase(t *testing.T) {
 	binDir := t.TempDir()
 	rclone := filepath.Join(binDir, "rclone")
-	if err := os.WriteFile(rclone, []byte("#!/bin/sh\ncase \"$*\" in\n  *workspace/proxies/raw/mix*) printf 'camera.mp4\\n' ;;\n  *) printf 'camera0000.mp4\\ncamera0001.mp4\\n' ;;\nesac\n"), 0o700); err != nil {
+	if err := os.WriteFile(rclone, []byte("#!/bin/sh\ncase \"$*\" in\n  *workspace/raw/mix*) printf 'camera.proxy.mp4\\ncamera.proxy.v1.json\\n' ;;\n  *) printf 'camera0000.mp4\\ncamera0001.mp4\\n' ;;\nesac\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -534,7 +537,7 @@ func TestMediaBrowserDiscoversPreparedSourceWithoutDatabase(t *testing.T) {
 func TestProductionProxyArtifactCountUsesStoredFiles(t *testing.T) {
 	binDir := t.TempDir()
 	rclone := filepath.Join(binDir, "rclone")
-	if err := os.WriteFile(rclone, []byte("#!/bin/sh\nprintf 'raw/mix/main.mp4\\nraw/mix/talks.mp4\\nnotes.json\\n'\n"), 0o700); err != nil {
+	if err := os.WriteFile(rclone, []byte("#!/bin/sh\nprintf 'raw/mix/main.proxy.mp4\\nraw/mix/main.proxy.v1.json\\nraw/mix/talks.proxy.mp4\\nraw/mix/talks.proxy.v1.json\\nraw/mix/incomplete.proxy.mp4\\nnotes.json\\n'\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -551,7 +554,7 @@ func TestProductionProxyArtifactCountUsesStoredFiles(t *testing.T) {
 func TestProductionProxyPrepareSkipsExistingArtifactWithoutDatabaseRecord(t *testing.T) {
 	binDir := t.TempDir()
 	rclone := filepath.Join(binDir, "rclone")
-	if err := os.WriteFile(rclone, []byte("#!/bin/sh\ncase \"$*\" in\n  *workspace/proxies*) printf 'raw/mix/camera.mp4\\n' ;;\n  *) printf 'camera0000.mp4\\ncamera0001.mp4\\n' ;;\nesac\n"), 0o700); err != nil {
+	if err := os.WriteFile(rclone, []byte("#!/bin/sh\ncase \"$*\" in\n  *workspace*) printf 'raw/mix/camera.proxy.mp4\\nraw/mix/camera.proxy.v1.json\\n' ;;\n  *) printf 'camera0000.mp4\\ncamera0001.mp4\\n' ;;\nesac\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))

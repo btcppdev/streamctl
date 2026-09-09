@@ -12,7 +12,7 @@
 <script>
 function createProductionMediaPreview(root,{onMark=()=>{}}={}){
 	const frame=root.querySelector('.media-preview-frame'),image=root.querySelector('.media-preview-image'),overlay=root.querySelector('.media-preview-overlay'),sourceLabel=root.querySelector('.media-preview-source-name'),status=root.querySelector('.media-preview-status'),seek=root.querySelector('.media-preview-seek'),play=root.querySelector('.media-preview-play'),markIn=root.querySelector('.media-preview-in'),markOut=root.querySelector('.media-preview-out'),fine=root.querySelector('.media-preview-fine'),ruler=fine.querySelector('canvas'),inMark=fine.querySelector('.media-preview-mark-in'),outMark=fine.querySelector('.media-preview-mark-out'),currentLabel=root.querySelector('[data-preview-current]'),durationLabel=root.querySelector('[data-preview-duration]');
-	const fineWindowMs=5000,seekTimeoutMs=4000,mediaSession=`${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,styles=getComputedStyle(document.documentElement),muted=styles.getPropertyValue('--muted').trim()||'#8b95a7',text=styles.getPropertyValue('--text').trim()||'#e5e7eb';
+	const fineWindowMs=5000,seekNoticeMs=4000,mediaSession=`${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,styles=getComputedStyle(document.documentElement),muted=styles.getPropertyValue('--muted').trim()||'#8b95a7',text=styles.getPropertyValue('--text').trim()||'#e5e7eb';
 	let video=root.querySelector('video'),info=null,source='',sourceType='video',inMs=null,outMs=null,loadToken=0,pendingStart=0,settledTimeMs=0,initialSeekPending=false,fineDrag=null,coarseDrag=null,seekInFlight=false,seekTimer=0,activeSeekTarget=null,queuedSeekTarget=null,finalSeekTarget=null,resumeAfterSeek=false,recoveryCount=0,playbackFrame=0;
 	const videoCache=new Map(),maxCachedVideos=2;
 	function timecode(ms){ms=Math.max(0,Math.round(Number(ms)||0));const h=Math.floor(ms/3600000),m=Math.floor(ms%3600000/60000),s=Math.floor(ms%60000/1000),x=ms%1000;return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}.${String(x).padStart(3,'0')}`}
@@ -34,27 +34,73 @@ function createProductionMediaPreview(root,{onMark=()=>{}}={}){
 	function setOverlay(objectKey=''){overlay.hidden=!objectKey;if(objectKey)overlay.src=objectURL(objectKey);else overlay.removeAttribute('src')}
 	function clear(message='Select a segment to preview.'){loadToken++;source='';sourceType='video';inMs=null;outMs=null;resetVideo();image.hidden=true;image.removeAttribute('src');setOverlay();status.textContent=message;update(0)}
 	function showImage(objectKey,overlayKey=''){loadToken++;source=String(objectKey||'');sourceType='image';inMs=null;outMs=null;resetVideo();setOverlay(overlayKey);if(!source){clear('No image selected.');return}status.textContent='Loading image…';image.hidden=false;image.onload=()=>{status.textContent=''};image.onerror=()=>{status.textContent='Could not load the image.'};image.src=objectURL(source);update(0)}
-	async function loadVideo(objectKey,type='video',at=0,overlayKey=''){objectKey=String(objectKey||'');if(!objectKey){clear('No video selected.');return}at=Math.max(0,Number(at)||0);setOverlay(overlayKey);image.hidden=true;image.removeAttribute('src');if(objectKey===source&&info&&video.readyState>0){seekGlobal(at);return}const token=++loadToken,cached=videoCache.get(objectKey);source=objectKey;sourceType=type||'video';pendingStart=at;resetVideo();if(cached){activateVideo(cached.video);info=cached.info;sourceType=cached.sourceType;seek.max=info.durationMs||0;settledTimeMs=globalTime();cacheVideo(objectKey,cached);if(video.readyState>0){seek.disabled=false;status.textContent='';update(settledTimeMs);seekGlobal(at)}else{initialSeekPending=at>5;status.textContent='Loading editing proxy…';update(at)}return}const reusable=!video.getAttribute('src')&&![...videoCache.values()].some(entry=>entry.video===video);activateVideo(reusable?video:createVideo());update(0);status.textContent='Checking editing proxy…';const loadingVideo=video,objectConference=objectKey.split('/')[0];try{const query=new URLSearchParams({conference:objectConference,path:objectKey}),response=await fetch('/production/media/info?'+query);if(!response.ok)throw new Error(await response.text());const nextInfo=await response.json();if(token!==loadToken||loadingVideo!==video)return;if(!nextInfo.proxyPath){status.textContent=nextInfo.warning||'Prepare this recording from the Production overview before editing it.';return}info=nextInfo;cacheVideo(objectKey,{video,info,sourceType});pendingStart=Math.min(pendingStart,info.durationMs||Infinity);initialSeekPending=pendingStart>5;seek.max=info.durationMs||0;status.textContent='Loading editing proxy…';video.src=objectURL(info.proxyPath);video.load()}catch(error){if(token===loadToken)status.textContent=error.message||String(error)}}
-	function seekGlobal(ms,autoplay=false){if(!info||video.readyState===0)return;ms=clamp(ms);finalSeekTarget=ms;queuedSeekTarget=ms;resumeAfterSeek=autoplay;update(ms);pumpSeek()}
-	function finishSeek(){const resume=resumeAfterSeek;if(seekTimer)clearTimeout(seekTimer);seekTimer=0;seekInFlight=false;activeSeekTarget=null;finalSeekTarget=null;queuedSeekTarget=null;resumeAfterSeek=false;recoveryCount=0;settledTimeMs=globalTime();status.textContent='';update(settledTimeMs);if(resume)video.play().catch(()=>{})}
-	function reload(target,message){if(!info?.proxyPath)return;if(seekTimer)clearTimeout(seekTimer);seekTimer=0;seekInFlight=false;activeSeekTarget=null;pendingStart=clamp(target);initialSeekPending=pendingStart>5;settledTimeMs=0;status.textContent=message;video.pause();video.src=objectURL(info.proxyPath)+`&reload=${Date.now()}`;video.load()}
-	function recover(){seekTimer=0;const target=clamp(finalSeekTarget??queuedSeekTarget??activeSeekTarget??settledTimeMs);recoveryCount++;if(recoveryCount===1){queuedSeekTarget=target;reload(target,'Recovering preview…');return}fineDrag=null;coarseDrag=null;fine.classList.remove('dragging');finalSeekTarget=null;queuedSeekTarget=null;resumeAfterSeek=false;reload(0,'That position could not be loaded; returning to the start.')}
-	function pumpSeek(){if(!info||video.readyState===0||seekInFlight||video.seeking)return;const dragging=fineDrag||coarseDrag,final=!dragging&&finalSeekTarget!==null,target=final?finalSeekTarget:queuedSeekTarget;if(target===null)return;queuedSeekTarget=null;if(Math.abs(globalTime()-target)<=5){if(final)finishSeek();return}seekInFlight=true;activeSeekTarget=target;video.currentTime=target/1000;if(seekTimer)clearTimeout(seekTimer);seekTimer=setTimeout(recover,seekTimeoutMs)}
-	function settleSeek(){if(seekTimer)clearTimeout(seekTimer);seekTimer=0;seekInFlight=false;activeSeekTarget=null;settledTimeMs=globalTime();if(!fineDrag&&!coarseDrag&&finalSeekTarget!==null&&Math.abs(settledTimeMs-finalSeekTarget)<=5){finishSeek();return}if(!fineDrag&&!coarseDrag&&finalSeekTarget===null&&queuedSeekTarget===null){finishSeek();return}pumpSeek()}
+	async function loadVideo(objectKey,type='video',at=0,overlayKey=''){
+		objectKey=String(objectKey||'');if(!objectKey){clear('No video selected.');return}
+		at=Math.max(0,Number(at)||0);setOverlay(overlayKey);image.hidden=true;image.removeAttribute('src');
+		if(objectKey===source&&info&&video.readyState>0&&!video.error){seekGlobal(at);return}
+		const token=++loadToken,cached=videoCache.get(objectKey);source=objectKey;sourceType=type||'video';pendingStart=at;resetVideo();
+		if(cached){
+			activateVideo(cached.video);info=cached.info;sourceType=cached.sourceType;seek.max=info.durationMs||0;settledTimeMs=globalTime();cacheVideo(objectKey,cached);
+			if(video.error){reload(at,'Reconnecting editing proxy…')}
+			else if(video.readyState>0){seek.disabled=false;status.textContent='';update(settledTimeMs);seekGlobal(at)}
+			else{initialSeekPending=true;status.textContent='Loading editing proxy…';update(at)}
+			return;
+		}
+		const reusable=!video.getAttribute('src')&&![...videoCache.values()].some(entry=>entry.video===video);
+		activateVideo(reusable?video:createVideo());update(0);status.textContent='Checking editing proxy…';
+		const loadingVideo=video,objectConference=objectKey.split('/')[0];
+		try{
+			const query=new URLSearchParams({conference:objectConference,path:objectKey}),response=await fetch('/production/media/info?'+query);
+			if(!response.ok)throw new Error(await response.text());const nextInfo=await response.json();
+			if(token!==loadToken||loadingVideo!==video)return;
+			if(!nextInfo.proxyPath){status.textContent=nextInfo.warning||'Prepare this recording from the Production overview before editing it.';return}
+			info=nextInfo;cacheVideo(objectKey,{video,info,sourceType});pendingStart=clamp(pendingStart);initialSeekPending=true;seek.max=info.durationMs||0;
+			status.textContent='Loading editing proxy…';video.src=objectURL(info.proxyPath);video.load();
+		}catch(error){if(token===loadToken)status.textContent=error.message||String(error)}
+	}
+	function seekGlobal(ms,autoplay=false){if(!info)return;ms=clamp(ms);if(initialSeekPending)pendingStart=ms;finalSeekTarget=ms;queuedSeekTarget=ms;resumeAfterSeek=autoplay;update(ms);pumpSeek()}
+	function finishSeek(){const resume=resumeAfterSeek;if(seekTimer)clearTimeout(seekTimer);seekTimer=0;seekInFlight=false;activeSeekTarget=null;finalSeekTarget=null;queuedSeekTarget=null;resumeAfterSeek=false;if(video.readyState>=2)recoveryCount=0;settledTimeMs=globalTime();status.textContent='';update(settledTimeMs);if(resume)video.play().catch(()=>{})}
+	function reload(target,message){if(!info?.proxyPath)return;if(seekTimer)clearTimeout(seekTimer);seekTimer=0;seekInFlight=false;activeSeekTarget=null;pendingStart=clamp(target);initialSeekPending=true;finalSeekTarget=pendingStart;queuedSeekTarget=pendingStart;status.textContent=message;video.pause();video.src=objectURL(info.proxyPath)+`&reload=${Date.now()}`;video.load()}
+	function recover(){
+		// Refresh the signed URL only after a real media error, never on a slow seek.
+		const target=clamp(scrubTarget()??queuedSeekTarget??finalSeekTarget??activeSeekTarget??(initialSeekPending?pendingStart:settledTimeMs));
+		if(seekTimer)clearTimeout(seekTimer);seekTimer=0;
+		if(recoveryCount++===0&&(video.error?.code===2||video.error?.code===4)){resumeAfterSeek=resumeAfterSeek||!video.paused;reload(target,'Reconnecting editing proxy…');return}
+		status.textContent='Could not load the editing proxy. Press Play to retry.';
+	}
+	function pumpSeek(){
+		if(!info||video.readyState===0||seekInFlight||video.seeking||video.error)return;
+		const dragging=fineDrag||coarseDrag,final=!dragging&&finalSeekTarget!==null,target=final?finalSeekTarget:queuedSeekTarget;
+		if(target===null)return;queuedSeekTarget=null;
+		if(Math.abs(globalTime()-target)<=5){if(final)finishSeek();return}
+		seekInFlight=true;activeSeekTarget=target;video.currentTime=target/1000;
+		if(seekTimer)clearTimeout(seekTimer);
+		seekTimer=setTimeout(()=>{seekTimer=0;status.textContent='Loading position…'},seekNoticeMs);
+	}
+	function settleSeek(){
+		if(seekTimer)clearTimeout(seekTimer);seekTimer=0;
+		const completedTarget=activeSeekTarget;seekInFlight=false;activeSeekTarget=null;settledTimeMs=globalTime();
+		// seeked acknowledges the request. Media can adjust the resulting position;
+		// requiring a 5 ms match can otherwise repeat the same seek forever.
+		if(finalSeekTarget===completedTarget)finalSeekTarget=null;
+		if(queuedSeekTarget===completedTarget)queuedSeekTarget=null;
+		if(finalSeekTarget!==null||queuedSeekTarget!==null){pumpSeek();return}
+		if(!fineDrag&&!coarseDrag)finishSeek();
+	}
 	function queueSeek(ms){ms=clamp(ms);queuedSeekTarget=ms;update(ms);pumpSeek();return ms}
 	function finishFine(event,cancelled=false){if(!fineDrag||event.pointerId!==fineDrag.pointerId)return;const drag=fineDrag,target=cancelled||!drag.moved?drag.startMs:drag.targetMs;fineDrag=null;finalSeekTarget=target;queuedSeekTarget=target;resumeAfterSeek=drag.moved&&!cancelled?false:drag.wasPlaying;fine.classList.remove('dragging');if(fine.hasPointerCapture(event.pointerId))fine.releasePointerCapture(event.pointerId);update(target);pumpSeek()}
 	fine.onpointerdown=event=>{if(!info||video.readyState===0||event.button>0)return;event.preventDefault();fine.focus();fine.setPointerCapture(event.pointerId);finalSeekTarget=null;queuedSeekTarget=null;resumeAfterSeek=false;const wasPlaying=!video.paused;if(wasPlaying)video.pause();const now=globalTime();fineDrag={pointerId:event.pointerId,startX:event.clientX,startMs:now,targetMs:now,wasPlaying,moved:false};fine.classList.add('dragging')};fine.onpointermove=event=>{if(!fineDrag||event.pointerId!==fineDrag.pointerId)return;const delta=event.clientX-fineDrag.startX;if(Math.abs(delta)>3)fineDrag.moved=true;fineDrag.targetMs=queueSeek(fineDrag.startMs-delta/fine.getBoundingClientRect().width*fineWindowMs)};fine.onpointerup=event=>finishFine(event);fine.onpointercancel=event=>finishFine(event,true);
 	function finishCoarse(event,cancelled=false){if(!coarseDrag||event?.pointerId!==undefined&&event.pointerId!==coarseDrag.pointerId)return;const drag=coarseDrag,target=cancelled?drag.startMs:drag.targetMs;coarseDrag=null;finalSeekTarget=target;queuedSeekTarget=target;resumeAfterSeek=drag.wasPlaying;if(seek.hasPointerCapture(drag.pointerId))seek.releasePointerCapture(drag.pointerId);update(target);pumpSeek()}
 	seek.onpointerdown=event=>{if(!info||video.readyState===0||event.button>0)return;seek.setPointerCapture(event.pointerId);finalSeekTarget=null;queuedSeekTarget=null;resumeAfterSeek=false;const wasPlaying=!video.paused;if(wasPlaying)video.pause();const now=globalTime();coarseDrag={pointerId:event.pointerId,startMs:now,targetMs:clamp(+seek.value),wasPlaying}};seek.oninput=()=>{const target=clamp(+seek.value);if(coarseDrag)coarseDrag.targetMs=queueSeek(target);else seekGlobal(target,!video.paused)};seek.onchange=()=>finishCoarse();seek.onpointerup=event=>finishCoarse(event);seek.onpointercancel=event=>finishCoarse(event,true);
-	function bindVideo(node){node.onloadedmetadata=()=>{if(node!==video||!info)return;if(!info.durationMs&&Number.isFinite(video.duration)){info.durationMs=Math.round(video.duration*1000);seek.max=info.durationMs}seek.disabled=false;update(globalTime())};node.oncanplay=()=>{if(node!==video)return;if(initialSeekPending){initialSeekPending=false;finalSeekTarget=pendingStart;queuedSeekTarget=pendingStart;update(pendingStart);pumpSeek();return}if(!video.seeking&&!seekInFlight){recoveryCount=0;settledTimeMs=globalTime();status.textContent='';update(settledTimeMs)}};node.onerror=()=>{if(node===video)status.textContent='Could not load the editing proxy.'};node.ontimeupdate=()=>{if(node!==video)return;if(!video.seeking&&!seekInFlight&&!fineDrag&&!coarseDrag)settledTimeMs=globalTime();update(scrubTarget()??globalTime())};node.onseeked=()=>{if(node===video)settleSeek()};node.onplay=()=>{if(node===video)setPlayState(true)};node.onpause=()=>{if(node===video)setPlayState(false)}}
+	function bindVideo(node){node.onloadedmetadata=()=>{if(node!==video||!info)return;if(!info.durationMs&&Number.isFinite(video.duration)){info.durationMs=Math.round(video.duration*1000);seek.max=info.durationMs}seek.disabled=false;if(initialSeekPending){initialSeekPending=false;seekGlobal(pendingStart,resumeAfterSeek)}else{update(globalTime());pumpSeek()}};node.oncanplay=()=>{if(node!==video)return;if(!video.seeking&&!seekInFlight&&queuedSeekTarget===null&&finalSeekTarget===null){recoveryCount=0;settledTimeMs=globalTime();status.textContent='';update(settledTimeMs)}};node.onerror=()=>{if(node===video&&info)recover()};node.ontimeupdate=()=>{if(node!==video)return;if(!video.seeking&&!seekInFlight&&!fineDrag&&!coarseDrag)settledTimeMs=globalTime();update(scrubTarget()??globalTime())};node.onseeked=()=>{if(node===video)settleSeek()};node.onplay=()=>{if(node===video)setPlayState(true)};node.onpause=()=>{if(node===video)setPlayState(false)}}
 	function animate(){if(video.paused||fineDrag||coarseDrag){playbackFrame=0;return}update();playbackFrame=requestAnimationFrame(animate)}
 	function setPlayState(playing){play.querySelector('span').textContent=playing?'❚❚':'▶';play.setAttribute('aria-label',playing?'Pause':'Play');play.title=playing?'Pause':'Play';if(playing&&!playbackFrame)playbackFrame=requestAnimationFrame(animate);else if(!playing&&playbackFrame){cancelAnimationFrame(playbackFrame);playbackFrame=0}}
-	function togglePlayback(){if(!info)return;video.paused?video.play().catch(()=>{}):video.pause()}
+	function togglePlayback(){if(!info)return;if(video.error){resumeAfterSeek=true;reload(scrubTarget()??queuedSeekTarget??finalSeekTarget??activeSeekTarget??(initialSeekPending?pendingStart:settledTimeMs),'Reconnecting editing proxy…');return}video.paused?video.play().catch(()=>{}):video.pause()}
 	bindVideo(video);play.onclick=togglePlayback;if(window.ResizeObserver)new ResizeObserver(()=>drawRuler(scrubTarget()??globalTime())).observe(fine);else window.addEventListener('resize',()=>drawRuler(scrubTarget()??globalTime()));
 	currentLabel.onfocus=()=>currentLabel.select();currentLabel.onkeydown=event=>{if(event.key==='Enter'){event.preventDefault();currentLabel.blur()}else if(event.key==='Escape'){event.preventDefault();currentLabel.value=timecode(globalTime());currentLabel.blur()}};currentLabel.onchange=()=>{const target=parseTimecode(currentLabel.value);if(!info||!Number.isFinite(target)){currentLabel.value=timecode(globalTime());status.textContent=info?'Use a timestamp like 00:12:34.500.':'';return}status.textContent='';currentLabel.value=timecode(clamp(target));seekGlobal(target)};
 	markIn.onclick=()=>onMark('in');markOut.onclick=()=>onMark('out');
 	function setMarks(nextIn=null,nextOut=null){inMs=Number.isFinite(nextIn)?Math.max(0,nextIn):null;outMs=Number.isFinite(nextOut)?Math.max(0,nextOut):null;update(scrubTarget()??globalTime())}
-	function ready(){return !!info&&!initialSeekPending&&video.readyState>=2&&!video.seeking&&!seekInFlight&&queuedSeekTarget===null&&finalSeekTarget===null}
+	function ready(){return !!info&&!initialSeekPending&&!video.error&&video.readyState>=2&&!video.seeking&&!seekInFlight&&queuedSeekTarget===null&&finalSeekTarget===null}
 	clear();
 	return {loadVideo,showImage,clear,setMarks,setStatus:message=>{status.textContent=message||''},seek:seekGlobal,seekBy:(delta,autoplay=false)=>seekGlobal(globalTime()+delta,autoplay),togglePlay:togglePlayback,currentTime:globalTime,source:()=>source,info:()=>info,hasVideo:()=>video.readyState>0,playing:()=>!video.paused,ready,timecode};
 }

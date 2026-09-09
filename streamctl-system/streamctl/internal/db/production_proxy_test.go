@@ -16,7 +16,7 @@ func TestProductionProxyQueueLifecycleAndRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	source := "toronto/recordings/raw/mix/toronto_01main_100431_0000.mp4"
-	proxy := "toronto/recordings/workspace/proxies/mix/toronto_01main_100431.mp4"
+	proxy := "toronto/recordings/workspace/mix/toronto_01main_100431.proxy.mp4"
 	job, queued, err := database.EnqueueProductionProxyJob(source, proxy)
 	if err != nil || !queued || job.Status != "queued" {
 		t.Fatalf("enqueue job=%+v queued=%v err=%v", job, queued, err)
@@ -57,11 +57,11 @@ func TestProductionProxyQueueLifecycleAndRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	finished, queued, err := database.EnqueueProductionProxyJob(source, proxy)
-	if err != nil || queued || finished.Status != "finished" || finished.DurationMS != 930123 {
-		t.Fatalf("finished job=%+v queued=%v err=%v", finished, queued, err)
+	if err != nil || !queued || finished.Status != "queued" || finished.DurationMS != 0 {
+		t.Fatalf("requeued finished job=%+v queued=%v err=%v", finished, queued, err)
 	}
 	queue, err := database.ProductionProxyQueue(10)
-	if err != nil || queue.Finished != 1 || len(queue.Items) != 0 {
+	if err != nil || queue.Queued != 1 || queue.Finished != 0 || len(queue.Items) != 1 {
 		t.Fatalf("finished queue=%+v err=%v", queue, err)
 	}
 }
@@ -77,7 +77,7 @@ func TestProductionProxyCountsAreConferenceScoped(t *testing.T) {
 	}
 	for i, conference := range []string{"toronto", "toronto", "nairobi"} {
 		source := conference + "/recordings/raw/mix/source" + string(rune('a'+i)) + ".mp4"
-		if _, _, err := database.EnqueueProductionProxyJob(source, conference+"/recordings/workspace/proxies/test.mp4"); err != nil {
+		if _, _, err := database.EnqueueProductionProxyJob(source, conference+"/recordings/workspace/test.proxy.mp4"); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -89,6 +89,19 @@ rclone's default configuration file.
 
 For end-to-end testing of the systemd integration, deploy to a VM (or to the droplet via `make deploy`).
 
+## Tests
+
+From this directory:
+
+```bash
+go test ./...
+node --test internal/handlers/tests/*.test.cjs
+```
+
+The shared preview tests use Node's built-in test runner and a simulated media
+element to cover delayed/adjusted seeks, source loading, and error recovery.
+They do not replace a browser playback check against real proxies.
+
 ## Bitcoin++ recording API
 
 Create a personal API token from a `global-admin` Bitcoin++ account with only

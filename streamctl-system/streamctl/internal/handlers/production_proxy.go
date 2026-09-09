@@ -23,7 +23,43 @@ import (
 	"streamctl/internal/db"
 )
 
-const productionProxyDirectory = "workspace/proxies"
+const (
+	productionWorkspaceDirectory   = "workspace"
+	productionProxyArtifactVersion = 1
+	productionProxyHeight          = 480
+)
+
+type productionProxyMetadata struct {
+	Version     int                             `json:"version"`
+	GeneratedAt time.Time                       `json:"generatedAt"`
+	Source      productionProxyMetadataSource   `json:"source"`
+	Proxy       productionProxyMetadataArtifact `json:"proxy"`
+}
+
+type productionProxyMetadataSource struct {
+	Path       string                         `json:"path"`
+	Type       string                         `json:"type"`
+	DurationMS int64                          `json:"durationMs"`
+	Chunks     []productionProxyMetadataChunk `json:"chunks"`
+}
+
+type productionProxyMetadataChunk struct {
+	Path       string    `json:"path"`
+	Size       int64     `json:"size"`
+	ModifiedAt time.Time `json:"modifiedAt,omitempty"`
+}
+
+type productionProxyMetadataArtifact struct {
+	Path                 string `json:"path"`
+	DurationMS           int64  `json:"durationMs"`
+	Height               int    `json:"height"`
+	VideoCodec           string `json:"videoCodec"`
+	CRF                  int    `json:"crf"`
+	KeyframeIntervalMS   int    `json:"keyframeIntervalMs"`
+	InterleaveDurationMS int    `json:"interleaveDurationMs,omitempty"`
+	AudioCodec           string `json:"audioCodec"`
+	AudioBitrate         string `json:"audioBitrate"`
+}
 
 func (h *Handler) productionProxyPrepare(w http.ResponseWriter, r *http.Request) {
 	conference := strings.TrimSpace(r.FormValue("conference"))
@@ -164,7 +200,11 @@ func productionProxyObjectKey(conference string, source mediaFile) string {
 	if stem == "" {
 		return ""
 	}
-	return recordingsPrefix + productionProxyDirectory + "/" + directory + stem + ".mp4"
+	return recordingsPrefix + productionWorkspaceDirectory + "/" + directory + stem + ".proxy.mp4"
+}
+
+func productionProxySidecarObjectKey(proxy string) string {
+	return strings.TrimSuffix(proxy, path.Ext(proxy)) + ".v" + strconv.Itoa(productionProxyArtifactVersion) + ".json"
 }
 
 func productionConferenceFromRecording(objectKey string) string {
@@ -180,15 +220,21 @@ func (h *Handler) productionProxyArtifactInventory(ctx context.Context, conferen
 	if strings.TrimSpace(h.Remote) == "" || !validProductionConference(conference) {
 		return proxies, nil
 	}
-	prefix := conference + "/recordings/" + productionProxyDirectory + "/"
+	prefix := conference + "/recordings/" + productionWorkspaceDirectory + "/"
 	lines, err := h.rcloneLsf(ctx, prefix, "--recursive", "--files-only")
 	if err != nil {
 		return nil, fmt.Errorf("inspect prepared media: %w", err)
 	}
+	files := make(map[string]bool)
 	for _, line := range lines {
 		relative := strings.Trim(strings.TrimSpace(line), "/")
-		if relative != "" && isVideoFile(relative) {
-			proxies[prefix+relative] = true
+		if relative != "" {
+			files[prefix+relative] = true
+		}
+	}
+	for objectKey := range files {
+		if strings.HasSuffix(objectKey, ".proxy.mp4") && files[productionProxySidecarObjectKey(objectKey)] {
+			proxies[objectKey] = true
 		}
 	}
 	return proxies, nil
@@ -223,10 +269,13 @@ func (h *Handler) productionProxyArtifactsForSources(ctx context.Context, source
 		if err != nil {
 			return nil, err
 		}
+		files := make(map[string]bool)
 		for _, line := range lines {
-			objectKey := directory + strings.Trim(strings.TrimSpace(line), "/")
-			if wanted[objectKey] {
-				found[objectKey] = true
+			files[directory+strings.Trim(strings.TrimSpace(line), "/")] = true
+		}
+		for proxy := range wanted {
+			if path.Dir(proxy)+"/" == directory && files[proxy] && files[productionProxySidecarObjectKey(proxy)] {
+				found[proxy] = true
 			}
 		}
 	}
@@ -242,12 +291,37 @@ func (h *Handler) productionProxyArtifactPresent(ctx context.Context, proxy stri
 		return false, false
 	}
 	name := path.Base(proxy)
+	sidecar := path.Base(productionProxySidecarObjectKey(proxy))
+	hasProxy, hasSidecar := false, false
 	for _, file := range files {
-		if strings.Trim(strings.TrimSpace(file), "/") == name {
-			return true, true
+		switch strings.Trim(strings.TrimSpace(file), "/") {
+		case name:
+			hasProxy = true
+		case sidecar:
+			hasSidecar = true
 		}
 	}
-	return false, true
+	return hasProxy && hasSidecar, true
+}
+
+func (h *Handler) readProductionProxyMetadata(ctx context.Context, proxy string) (productionProxyMetadata, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	sidecar := productionProxySidecarObjectKey(proxy)
+	cmd := exec.CommandContext(ctx, "rclone", "cat", h.remotePath(sidecar))
+	cmd.Env = rcloneEnv(h.RcloneConfig)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return productionProxyMetadata{}, fmt.Errorf("read %s: %s", sidecar, commandError(output, err))
+	}
+	var metadata productionProxyMetadata
+	if err := json.Unmarshal(output, &metadata); err != nil {
+		return productionProxyMetadata{}, fmt.Errorf("read %s: %w", sidecar, err)
+	}
+	if metadata.Version != productionProxyArtifactVersion || metadata.Proxy.Path != proxy {
+		return productionProxyMetadata{}, fmt.Errorf("read %s: incompatible proxy metadata", sidecar)
+	}
+	return metadata, nil
 }
 
 func (h *Handler) productionProxyDispatcher() {
@@ -318,6 +392,7 @@ func (h *Handler) prepareProductionProxy(parent context.Context, job db.Producti
 
 	var concat bytes.Buffer
 	var sourceDurationMS int64
+	chunkMetadata := make([]productionProxyMetadataChunk, 0, len(chunks))
 	for i, objectKey := range chunks {
 		extension := strings.ToLower(path.Ext(objectKey))
 		if extension == "" {
@@ -332,6 +407,12 @@ func (h *Handler) prepareProductionProxy(parent context.Context, job db.Producti
 		if chunkDurationMS, err := proxyDurationMS(ctx, local); err == nil {
 			sourceDurationMS += chunkDurationMS
 		}
+		chunkInfo := productionProxyMetadataChunk{Path: objectKey}
+		if fileInfo, err := os.Stat(local); err == nil {
+			chunkInfo.Size = fileInfo.Size()
+			chunkInfo.ModifiedAt = fileInfo.ModTime().UTC()
+		}
+		chunkMetadata = append(chunkMetadata, chunkInfo)
 		fmt.Fprintf(&concat, "file '%s'\n", filepath.ToSlash(local))
 	}
 	concatPath := filepath.Join(workDir, "inputs.txt")
@@ -345,9 +426,13 @@ func (h *Handler) prepareProductionProxy(parent context.Context, job db.Producti
 		"-fflags", "+genpts",
 		"-f", "concat", "-safe", "0", "-i", concatPath,
 		"-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn",
-		"-vf", "scale=-2:540",
+		"-vf", "scale=-2:"+strconv.Itoa(productionProxyHeight),
 		"-c:v", "libx264", "-preset", "veryfast", "-crf", "26", "-pix_fmt", "yuv420p",
+		"-force_key_frames", "expr:gte(t,n_forced*1)",
 		"-c:a", "aac", "-b:a", "96k", "-ac", "2",
+		// Group one second per stream inside the single MP4. Per-packet
+		// interleaving otherwise produces huge sample tables on all-day sources.
+		"-chunk_duration", "1000000",
 		"-movflags", "+faststart", "-avoid_negative_ts", "make_zero", output,
 	); err != nil {
 		return 0, fmt.Errorf("encode editing proxy: %w", err)
@@ -359,6 +444,31 @@ func (h *Handler) prepareProductionProxy(parent context.Context, job db.Producti
 	h.updateProductionProxyProgress(job.ID, "Uploading proxy", 0)
 	if err := h.runProxyRclone(ctx, job.ID, "Uploading proxy", "copyto", "--no-traverse", output, h.remotePath(job.Proxy)); err != nil {
 		return 0, fmt.Errorf("upload %s: %w", job.Proxy, err)
+	}
+	metadata := productionProxyMetadata{
+		Version:     productionProxyArtifactVersion,
+		GeneratedAt: time.Now().UTC(),
+		Source: productionProxyMetadataSource{
+			Path: job.Source, Type: source.SourceType, DurationMS: sourceDurationMS, Chunks: chunkMetadata,
+		},
+		Proxy: productionProxyMetadataArtifact{
+			Path: job.Proxy, DurationMS: durationMS, Height: productionProxyHeight,
+			VideoCodec: "h264", CRF: 26, KeyframeIntervalMS: 1000,
+			AudioCodec: "aac", AudioBitrate: "96k", InterleaveDurationMS: 1000,
+		},
+	}
+	metadataJSON, err := json.MarshalIndent(metadata, "", "  ")
+	if err != nil {
+		return 0, fmt.Errorf("encode proxy metadata: %w", err)
+	}
+	metadataPath := filepath.Join(workDir, "proxy.json")
+	if err := os.WriteFile(metadataPath, append(metadataJSON, '\n'), 0o600); err != nil {
+		return 0, fmt.Errorf("write proxy metadata: %w", err)
+	}
+	h.updateProductionProxyProgress(job.ID, "Uploading metadata", 0)
+	sidecar := productionProxySidecarObjectKey(job.Proxy)
+	if err := h.runProxyRclone(ctx, job.ID, "Uploading metadata", "copyto", "--no-traverse", metadataPath, h.remotePath(sidecar)); err != nil {
+		return 0, fmt.Errorf("upload %s: %w", sidecar, err)
 	}
 	return durationMS, nil
 }

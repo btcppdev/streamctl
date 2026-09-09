@@ -55,10 +55,10 @@ func (db *DB) EnqueueProductionProxyJob(source, proxy string) (ProductionProxyJo
 	if inserted == 0 {
 		result, err = db.Exec(`
 			UPDATE production_proxy_jobs
-			SET proxy_object_key = ?, status = 'queued', progress_percent = 0,
+			SET proxy_object_key = ?, status = 'queued', duration_ms = 0, progress_percent = 0,
 			    progress_stage = 'Waiting', last_error = '', finished_at = NULL,
 			    updated_at = CURRENT_TIMESTAMP
-			WHERE source_object_key = ? AND status = 'failed'
+			WHERE source_object_key = ? AND status IN ('failed', 'finished')
 		`, proxy, source)
 		if err != nil {
 			return ProductionProxyJob{}, false, fmt.Errorf("requeue production proxy: %w", err)

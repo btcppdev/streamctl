@@ -703,8 +703,17 @@ func (h *Handler) attachProductionProxyInfo(ctx context.Context, info logicalMed
 	proxy := productionProxyObjectKey(productionConferenceFromRecording(info.Path), source)
 	present, checked := h.productionProxyArtifactPresent(ctx, proxy)
 	if present {
+		metadata, err := h.readProductionProxyMetadata(ctx, proxy)
+		if err != nil || metadata.Source.Path != info.Path {
+			info.ProxyStatus = ""
+			info.ProxyPath = ""
+			info.DurationMS = 0
+			info.Warning = "The editing proxy metadata is invalid; prepare this recording again."
+			return info
+		}
 		info.ProxyStatus = "finished"
 		info.ProxyPath = proxy
+		info.DurationMS = metadata.Proxy.DurationMS
 		info.Warning = ""
 	} else if checked && info.ProxyStatus == "finished" {
 		info.ProxyStatus = ""
