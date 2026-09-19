@@ -199,8 +199,11 @@ func main() {
 		GPUDestroyAfterJob:  *gpuDestroyAfterJob,
 		Systemd:             sysd,
 		OAuth:               oauthClient,
-		BTCPP:               btcppAPIClient,
 		BTCPPBaseURL:        strings.TrimRight(strings.TrimSpace(*btcppAPIBase), "/"),
+	}
+	// Keep the interface nil when no API token is configured.
+	if btcppAPIClient != nil {
+		h.BTCPP = btcppAPIClient
 	}
 
 	mux := http.NewServeMux()
