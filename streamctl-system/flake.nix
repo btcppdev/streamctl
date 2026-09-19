@@ -148,7 +148,7 @@
 
             renderOutputDir = lib.mkOption {
               type = lib.types.str;
-              default = "/root/streamctl-render-output";
+              default = "/workspace/streamctl-render-output";
               description = "Temporary output directory on the GPU worker, partitioned by streamctl render job ID.";
             };
 
@@ -359,6 +359,7 @@
                     ${lib.optionalString (cfg.btcppAPITokenFile != "") "-btcpp-api-base=${lib.escapeShellArg cfg.btcppAPIBaseURL} \\"}
                     ${lib.optionalString (cfg.btcppAPITokenFile != "") "-btcpp-api-token-file=${lib.escapeShellArg cfg.btcppAPITokenFile} \\"}
                     -gpu-worker-host=${cfg.gpuWorkerHost} \
+                    -gpu-worker-ssh-key=${cfg.dataDir}/gpu-worker-ssh-key \
                     -gpu-worker-command=${cfg.gpuWorkerCommand} \
                     -render-worker-command=${cfg.renderWorkerCommand} \
                     -render-output-dir=${cfg.renderOutputDir} \
@@ -426,6 +427,13 @@
       {
         packages.default = streamctlPackage pkgs;
         packages.streamctl = streamctlPackage pkgs;
+
+        checks.worker-input-cache = pkgs.runCommand "streamctl-worker-input-cache-tests" {
+          nativeBuildInputs = [ pkgs.python3 pkgs.rclone ];
+        } ''
+          python3 -B -m unittest discover -s ${./streamctl/internal/handlers/worker} -p test_input_cache.py -v
+          touch $out
+        '';
 
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [

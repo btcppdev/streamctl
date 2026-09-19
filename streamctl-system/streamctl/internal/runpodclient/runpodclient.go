@@ -79,15 +79,25 @@ func (c *Client) ListPods(ctx context.Context) ([]Pod, error) {
 }
 
 func (c *Client) CreatePod(ctx context.Context, req CreatePodRequest) (*Pod, error) {
-	var pod Pod
-	if err := c.request(ctx, http.MethodPost, "/pods", req, &pod); err != nil {
-		var resp struct {
-			Pod Pod `json:"pod"`
-		}
-		if err2 := c.request(ctx, http.MethodPost, "/pods", req, &resp); err2 != nil {
-			return nil, err
-		}
-		return &resp.Pod, nil
+	// Creation is not idempotent. Decode alternate response shapes from the
+	// same response, never by issuing a second potentially billable POST.
+	var raw json.RawMessage
+	if err := c.request(ctx, http.MethodPost, "/pods", req, &raw); err != nil {
+		return nil, err
+	}
+	var response struct {
+		Pod
+		Wrapped *Pod `json:"pod"`
+	}
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return nil, err
+	}
+	pod := response.Pod
+	if response.Wrapped != nil {
+		pod = *response.Wrapped
+	}
+	if strings.TrimSpace(pod.ID) == "" {
+		return nil, fmt.Errorf("RunPod creation returned no pod ID; reconcile existing pods before retrying")
 	}
 	return &pod, nil
 }

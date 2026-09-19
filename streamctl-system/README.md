@@ -211,7 +211,7 @@ make stream-logs ID=3      # specific scheduled stream
    ```nix
    services.streamctl = {
      renderWorkerCommand = "/root/render-from-spaces.py";
-     renderOutputDir = "/root/streamctl-render-output";
+     renderOutputDir = "/workspace/streamctl-render-output";
    };
    ```
 
@@ -220,6 +220,69 @@ make stream-logs ID=3      # specific scheduled stream
 streamctl performs structural validation locally and stages the manifest with mode `0700`/`umask 077`. The worker downloads the referenced objects into an isolated work directory, asks `conf-render validate` to perform authoritative validation, renders locally, and uploads the results under `<conference>/recordings/renders/<streamctl-job-id>/`. Each job includes its original bucket-key definition and shared settings as `<job-id>.manifest.json`; transcription-enabled jobs also include `<job-id>.subs.srt` and `<job-id>.words.srt`. A structured `ready.json` indexes the per-job artifacts and is uploaded last. Local staged manifests and work files are removed after terminal completion. Failed or cancelled jobs can be retried from the same page.
 
 The queue is durable across streamctl restarts. Worker-side result markers allow streamctl to reconcile a completed transient unit after reconnecting. Managed workers are not destroyed while either a transcode or render remains queued/running.
+
+RunPod creation issues one POST per attempt; response parsing never repeats it.
+Manual and automatic creation share a lock and check for an existing named pod
+before creating one. A lost response is reported as an error; later attempts
+reconcile the pod list first. Keep a single controller responsible for each
+worker name, and inspect RunPod before manually retrying an ambiguous creation.
+
+Replacement uploads remove the previous `ready.json` immediately before changing
+remote outputs, and publish the new marker only after upload succeeds. Rendering
+or download failures before that point leave the prior completed output ready.
+An interrupted upload leaves no ready marker; retry the job to finish it. This
+guards readiness, not atomic visibility for clients that bypass the marker.
+
+For the first supervised production test: take a manual database backup, review
+existing queued work (startup resumes dispatch), verify the installed RunPod and
+rclone credentials, then queue two short renders sharing one small source. Check
+their outputs and cache reuse, and confirm termination in RunPod after the queue
+drains. Test cancellation, retry, and controller restart separately afterward.
+
+Workers use systemd when available, or a locked, detached process group inside
+containers. Each render attempt has separate working/output directories under
+`/workspace` (the RunPod volume), so an old attempt cannot finish or clean up a
+new retry. Both execution paths enforce a 48-hour runtime limit independently
+of the controller. Cancellation stops the process group before deleting files.
+Successful uploads remove job-specific inputs and outputs; the controller also
+cleans up failed attempts. Shared source files remain in
+`/workspace/streamctl-input-cache` for the next jobs on that worker. Remote size,
+modification time, and available hashes identify each cached version. Jobs use
+hard links, not duplicate local copies; incomplete downloads cannot be reused.
+When space is needed, the least-recently-used cached inputs are removed, except
+those required by the current job or still linked to another render. Destroying
+the worker removes its local cache. No job grouping or cross-worker cache is used.
+
+The default free-space reserve is 2 GiB. This is a download guard, **not** a full
+estimate of encoding/intermediate space; large recordings still require
+appropriately sized worker storage. On custom workers, `STREAMCTL_INPUT_CACHE`
+and `STREAMCTL_RENDER_DISK_RESERVE_BYTES` can override the cache path/reserve;
+cache and work directories must share a filesystem. Chunked sources still
+download the whole resolved sequence on first use, then reuse it across jobs.
+Run cache tests with `python3 -B -m unittest discover -s
+streamctl/internal/handlers/worker -p test_input_cache.py -v` from this directory.
+
+Managed-worker readiness includes a tiny real `conf-render` NVENC render using
+the pinned revision and normalized-output settings. RunPod installation is
+limited to 20 minutes, with logs at `/root/streamctl-worker-setup.log`; a failed
+setup never becomes ready. Inspect provider logs if installation failed before
+SSH was installed. Failed setup does not automatically destroy the pod: inspect
+and **terminate it promptly** to stop charges. Runtime limits stop jobs, not
+provider billing; do not rely on them as a spending cap.
+
+Before production rollout, run the live GPU acceptance test: short render with
+audio/overlay/transcription, verify uploaded artifacts, retry a failure, cancel
+a running job, restart the controller during a job, then confirm worker
+termination. Cross-conference input manifests remain unsupported; output keys
+remain `<conference>/recordings/renders/<queue-id>/`. Publication integration,
+output naming/overwrite policy, and full disk-capacity planning need their own
+follow-up before unattended conference batches.
+
+**Database backups:** `make backup-db` creates a consistent SQLite backup and
+downloads it into the operator's local `backups/` directory. No scheduled backup
+service is installed. Treat backups as sensitive data; never simply copy the
+live database without its WAL. Stop the controller and review worker queues
+before restoring an old backup, since queued work may otherwise be replayed.
 
 **Tear it all down:**
 
@@ -238,6 +301,17 @@ make run-local    # run on :8080 with /tmp/streamctl-local/ as data dir
 ```
 
 `run-local` won't actually be able to call `systemctl` (you're not root), so scheduled streams will fail to register. The UI, endpoint management, stream creation, and render manifest validation/queue persistence can still be tested; actual render dispatch requires a configured SSH-accessible GPU worker.
+
+For a later paid GPU test, `make run-local` accepts `RUNPOD_TOKEN_FILE`,
+`RCLONE_CONFIG_FILE`, and `STREAMCTL_REMOTE`. It uses a separate
+`streamctl-dev-worker` pod name (override with `STREAMCTL_WORKER_NAME`), a local
+SSH key under `/tmp/streamctl-local/`, and enables worker destruction after the
+queues drain. `STREAMCTL_GPU_TYPE` chooses the GPU; alternatively,
+`STREAMCTL_GPU_WORKER_HOST` selects an existing SSH-accessible worker. No public
+URL or inbound tunnel to the developer machine is required. Local data under
+`/tmp` is disposable; production data must remain under the persistent configured
+`dataDir`. Keep the controller running until the trial finishes, and verify
+termination in the provider console even when automatic cleanup is enabled.
 
 ## All Make targets
 

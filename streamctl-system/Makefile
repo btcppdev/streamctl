@@ -171,6 +171,9 @@ run-local: build ## Run streamctl locally on :8080 with a test config.
 	if [ -n "$${BTCPP_API_TOKEN_FILE:-}" ]; then set -- "$$@" -btcpp-api-token-file "$$BTCPP_API_TOKEN_FILE"; fi; \
 	if [ -n "$${STREAMCTL_REMOTE:-}" ]; then set -- "$$@" -remote "$$STREAMCTL_REMOTE"; fi; \
 	if [ -n "$${RCLONE_CONFIG_FILE:-}" ]; then set -- "$$@" -rclone-config "$$RCLONE_CONFIG_FILE"; fi; \
+	if [ -n "$${RUNPOD_TOKEN_FILE:-}" ]; then set -- "$$@" -runpod-token-file "$$RUNPOD_TOKEN_FILE" -runpod-pod-name "$${STREAMCTL_WORKER_NAME:-streamctl-dev-worker}" -gpu-worker-ssh-key /tmp/streamctl-local/gpu-worker-ssh-key -gpu-destroy-after-job=true; fi; \
+	if [ -n "$${STREAMCTL_GPU_TYPE:-}" ]; then set -- "$$@" -runpod-gpu-type "$$STREAMCTL_GPU_TYPE"; fi; \
+	if [ -n "$${STREAMCTL_GPU_WORKER_HOST:-}" ]; then set -- "$$@" -gpu-worker-host "$$STREAMCTL_GPU_WORKER_HOST"; fi; \
 	STREAMCTL_SECRET=$$(cat /tmp/streamctl-local/secret) ./result/bin/cmd "$$@"
 
 # ---------- ops ----------
@@ -183,8 +186,9 @@ logs: check-ip ## Tail streamctl logs.
 
 backup-db: check-ip ## Copy the server SQLite DB to ./backups with a timestamp.
 	@mkdir -p backups
-	@TS=$$(date -u +%Y%m%dT%H%M%SZ); \
-	  scp root@$(IP):/var/lib/streamctl/streamctl.db backups/streamctl-$$TS.db; \
+	@set -eu; umask 077; TS=$$(date -u +%Y%m%dT%H%M%SZ); \
+	  ssh root@$(IP) 'umask 077; sqlite3 /var/lib/streamctl/streamctl.db ".backup /var/lib/streamctl/backup.db"'; \
+	  scp root@$(IP):/var/lib/streamctl/backup.db backups/streamctl-$$TS.db; \
 	  echo "Backed up database to backups/streamctl-$$TS.db"
 
 # Usage: make stream-logs ID=3

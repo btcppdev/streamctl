@@ -1343,6 +1343,14 @@ func (db *DB) MarkRenderQueueFinished(id int64, status, lastError string) error 
 	return requireRow(result, err)
 }
 
+// FinishRenderAttempt prevents a delayed monitor from completing a newer retry.
+func (db *DB) FinishRenderAttempt(id int64, unit, status, lastError string) error {
+	result, err := db.Exec(`UPDATE render_job_queue
+		SET status = ?, last_error = ?, finished_at = CURRENT_TIMESTAMP
+		WHERE id = ? AND unit_name = ? AND status = 'running'`, status, lastError, id, unit)
+	return requireRow(result, err)
+}
+
 type rowScanner interface {
 	Scan(dest ...any) error
 }

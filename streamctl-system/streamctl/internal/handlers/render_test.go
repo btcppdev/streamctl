@@ -139,6 +139,8 @@ local_path() { case "$1" in spaces:test/*) printf '%s/%s' "$REMOTE_ROOT" "${1#sp
 src="$(local_path "$src")"
 dst="$(local_path "$dst")"
 case "$command" in
+  lsjson) printf '{"Size":6,"ModTime":"2026-09-18T00:00:00Z","Hashes":{}}\n' ;;
+  deletefile) if [ -f "$dst" ]; then rm "$dst"; else exit 4; fi ;;
   copyto) mkdir -p "$(dirname "$dst")"; cp "$src" "$dst" ;;
   copy) mkdir -p "$dst"; cp -R "$src"/. "$dst" ;;
   *) echo "unsupported fake rclone command: $command" >&2; exit 2 ;;
@@ -177,6 +179,7 @@ printf 'word subtitles' > "$output/intro.words.srt"
 		"PATH="+binDir+":"+os.Getenv("PATH"),
 		"REMOTE_ROOT="+remoteRoot,
 		"SPACES_REMOTE=spaces:test",
+		"STREAMCTL_INPUT_CACHE="+filepath.Join(root, "cache"),
 		"CONF_RENDER_COMMAND="+filepath.Join(binDir, "conf-render"),
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -187,6 +190,12 @@ printf 'word subtitles' > "$output/intro.words.srt"
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("uploaded %s: %v", name, err)
 		}
+	}
+	if _, err := os.Stat(output); !os.IsNotExist(err) {
+		t.Fatalf("uploaded output was not cleaned up: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "work")); !os.IsNotExist(err) {
+		t.Fatalf("uploaded work was not cleaned up: %v", err)
 	}
 	manifestData, err := os.ReadFile(filepath.Join(remoteRoot, "dev26", "recordings", "renders", "42", "intro.manifest.json"))
 	if err != nil {

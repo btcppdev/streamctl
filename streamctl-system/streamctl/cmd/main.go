@@ -69,9 +69,10 @@ func main() {
 		btcppAPIBase        = flag.String("btcpp-api-base", "https://btcpp.dev", "Bitcoin++ API base URL used by production workspaces and broadcast status")
 		btcppAPITokenFile   = flag.String("btcpp-api-token-file", "", "path to the Bitcoin++ machine API token")
 		gpuWorkerHost       = flag.String("gpu-worker-host", "", "SSH target for GPU transcode worker, e.g. ubuntu@1.2.3.4")
+		gpuWorkerSSHKey     = flag.String("gpu-worker-ssh-key", "", "managed worker SSH key path; defaults to the production data directory")
 		gpuWorkerCommand    = flag.String("gpu-worker-command", "/root/transcode-nvenc.sh", "command path on GPU worker used to process one Spaces path")
 		renderWorkerCommand = flag.String("render-worker-command", "/root/render-from-spaces.py", "render wrapper command on the GPU worker")
-		renderOutputDir     = flag.String("render-output-dir", "/root/streamctl-render-output", "temporary render output directory on the GPU worker")
+		renderOutputDir     = flag.String("render-output-dir", "/workspace/streamctl-render-output", "temporary render output directory on the GPU worker")
 		doTokenFile         = flag.String("do-token-file", "", "DigitalOcean API token file for managed GPU workers")
 		runpodTokenFile     = flag.String("runpod-token-file", "", "RunPod API token file for managed GPU workers")
 		runpodPodName       = flag.String("runpod-pod-name", "streamctl-gpu-worker", "managed RunPod pod name")
@@ -179,6 +180,7 @@ func main() {
 		NostrKeyDir:         *nostrKeyDir,
 		NostrKeyOwner:       *runUser,
 		GPUWorkerHost:       strings.TrimSpace(*gpuWorkerHost),
+		GPUWorkerSSHKey:     strings.TrimSpace(*gpuWorkerSSHKey),
 		GPUWorkerCommand:    strings.TrimSpace(*gpuWorkerCommand),
 		RenderWorkerCommand: strings.TrimSpace(*renderWorkerCommand),
 		RenderOutputDir:     strings.TrimRight(strings.TrimSpace(*renderOutputDir), "/"),

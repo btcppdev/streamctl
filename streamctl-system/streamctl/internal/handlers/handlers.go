@@ -46,7 +46,7 @@ var renderWorkerScriptText string
 const (
 	gpuWorkerSSHKeyPath  = "/var/lib/streamctl/gpu-worker-ssh-key"
 	confRenderRepository = "https://github.com/jgb95/conf-render.git"
-	confRenderRevision   = "d067f0acc99ee68925b5fae2f1d29ae23a0fe88d"
+	confRenderRevision   = "547f5f4be89d87034e2bfb4ea293db1fa621aa39"
 )
 
 type Handler struct {
@@ -60,6 +60,7 @@ type Handler struct {
 	NostrKeyDir         string
 	NostrKeyOwner       string
 	GPUWorkerHost       string
+	GPUWorkerSSHKey     string
 	GPUWorkerCommand    string
 	RenderWorkerCommand string
 	RenderOutputDir     string
@@ -83,6 +84,7 @@ type Handler struct {
 
 	funcs        template.FuncMap
 	gpuQueueMu   sync.Mutex
+	gpuCreateMu  sync.Mutex
 	proxyQueueMu sync.Mutex
 }
 
@@ -1224,23 +1226,28 @@ func startRemoteGPUTranscode(ctx context.Context, host, command, rawPath string)
 }
 
 func remoteGPUTranscodeCommand(unitName, command, rawPath string) string {
+	return remoteGPUJobCommand(unitName, "streamctl GPU transcode "+rawPath, rawPath, "exec "+shellQuote(command)+" "+shellQuote(rawPath))
+}
+
+// Both VM and container workers use this execution and status contract.
+func remoteGPUJobCommand(unitName, description, rawPath, invocation string) string {
 	systemdRun := strings.Join([]string{
 		"systemd-run",
 		"--unit=" + shellQuote(unitName),
-		"--description=" + shellQuote("streamctl GPU transcode "+rawPath),
+		"--description=" + shellQuote(description),
 		"--collect",
 		"--property=" + shellQuote("Type=exec"),
+		"--property=" + shellQuote("RuntimeMaxSec=48h"),
 		"--property=" + shellQuote("WorkingDirectory=/root"),
 		"--property=" + shellQuote("Environment=RCLONE_CONFIG=/root/rclone.conf"),
 		"--",
-		shellQuote(command),
-		shellQuote(rawPath),
+		"/bin/bash", "-c", shellQuote(invocation),
 	}, " ")
 	return strings.Join([]string{
 		"unit=" + shellQuote(unitName),
 		"raw=" + shellQuote(rawPath),
-		"cmd=" + shellQuote(command),
-		"desc=" + shellQuote("streamctl GPU transcode "+rawPath),
+		"cmd=" + shellQuote(invocation),
+		"desc=" + shellQuote(description),
 		"if command -v systemd-run >/dev/null 2>&1 && systemctl show-environment >/dev/null 2>&1; then if systemctl is-active --quiet \"$unit\"; then printf '%s\\n' \"$unit\"; exit 0; fi; exec " + systemdRun + "; fi",
 		"jobsroot=${STREAMCTL_GPU_JOB_ROOT:-/root/streamctl-gpu-jobs}",
 		"mkdir -p \"$jobsroot\"",
@@ -1256,7 +1263,7 @@ func remoteGPUTranscodeCommand(unitName, command, rawPath string) string {
 		"printf 'running\\n' > \"$jobdir/sub\"",
 		": > \"$jobdir/result\"",
 		": > \"$jobdir/journal\"",
-		"nohup env RCLONE_CONFIG=/root/rclone.conf STREAMCTL_JOBDIR=\"$jobdir\" bash -c 'set +e; \"$1\" \"$2\" >> \"$STREAMCTL_JOBDIR/journal\" 2>&1; rc=$?; if [ \"$rc\" -eq 0 ]; then printf \"inactive\\n\" > \"$STREAMCTL_JOBDIR/active\"; printf \"exited\\n\" > \"$STREAMCTL_JOBDIR/sub\"; printf \"success\\n\" > \"$STREAMCTL_JOBDIR/result\"; else printf \"failed\\n\" > \"$STREAMCTL_JOBDIR/active\"; printf \"failed\\n\" > \"$STREAMCTL_JOBDIR/sub\"; printf \"exit-code\\n\" > \"$STREAMCTL_JOBDIR/result\"; fi; exit \"$rc\"' streamctl-gpu-job \"$cmd\" \"$raw\" >/dev/null 2>&1 & printf '%s\\n' \"$!\" > \"$jobdir/pid\"",
+		"nohup setsid env RCLONE_CONFIG=/root/rclone.conf STREAMCTL_JOBDIR=\"$jobdir\" timeout --kill-after=30s 48h bash -c 'set +e; bash -c \"$1\" >> \"$STREAMCTL_JOBDIR/journal\" 2>&1; rc=$?; if [ \"$rc\" -eq 0 ]; then printf \"inactive\\n\" > \"$STREAMCTL_JOBDIR/active\"; printf \"exited\\n\" > \"$STREAMCTL_JOBDIR/sub\"; printf \"success\\n\" > \"$STREAMCTL_JOBDIR/result\"; else printf \"failed\\n\" > \"$STREAMCTL_JOBDIR/active\"; printf \"failed\\n\" > \"$STREAMCTL_JOBDIR/sub\"; printf \"exit-code\\n\" > \"$STREAMCTL_JOBDIR/result\"; fi; exit \"$rc\"' streamctl-gpu-job \"$cmd\" >/dev/null 2>&1 & printf '%s\\n' \"$!\" > \"$jobdir/pid\"",
 		"printf '%s\\n' \"$unit\"",
 	}, "; ")
 }
@@ -1367,7 +1374,7 @@ func (h *Handler) appendCachedGPUJobs(status gpuStatusView) gpuStatusView {
 
 func (h *Handler) gpuJob(ctx context.Context, host, unit string, includeJournal bool) gpuJobView {
 	job := gpuJobView{UnitName: unit, Host: host}
-	show, err := remoteSSH(ctx, host, "systemctl show "+shellQuote(unit)+" --property=Description --property=LoadedState --property=ActiveState --property=SubState --property=Result --property=ActiveEnterTimestamp")
+	show, err := remoteSSH(ctx, host, "systemctl show "+shellQuote(unit)+" --property=Description --property=LoadState --property=ActiveState --property=SubState --property=Result --property=ActiveEnterTimestamp")
 	if err != nil {
 		fileJob := h.gpuFileJob(ctx, host, unit, includeJournal)
 		if fileJob.LoadedState != "" || fileJob.ActiveState != "" || fileJob.Journal != "" {
@@ -1376,6 +1383,12 @@ func (h *Handler) gpuJob(ctx context.Context, host, unit string, includeJournal 
 		job.Error = appendGPUError(job.Error, fmt.Errorf("systemctl show: %w: %s", err, strings.TrimSpace(show)))
 	} else {
 		populateGPUJobState(&job, show)
+		if job.LoadedState == "not-found" {
+			// systemd reports an absent unit as inactive, which does not mean
+			// a render completed successfully. Durable results decide that.
+			job.ActiveState = ""
+			job.Result = ""
+		}
 	}
 	if includeJournal {
 		journal, err := remoteSSH(ctx, host, "journalctl -u "+shellQuote(unit)+" --no-pager --output=short-iso -n 300")
@@ -1393,7 +1406,7 @@ func (h *Handler) gpuFileJob(ctx context.Context, host, unit string, includeJour
 	metaCmd := strings.Join([]string{
 		"jobdir=" + shellQuote(jobdir),
 		"[ -d \"$jobdir\" ] || exit 1",
-		"active=$(tr '\\n' ' ' < \"$jobdir/active\" 2>/dev/null || true)",
+		"active=$(tr -d '[:space:]' < \"$jobdir/active\" 2>/dev/null || true)",
 		"pid=$(tr -d '[:space:]' < \"$jobdir/pid\" 2>/dev/null || true)",
 		"if [ \"$active\" = running ] && { [ -z \"$pid\" ] || ! kill -0 \"$pid\" 2>/dev/null; }; then printf 'failed\\n' > \"$jobdir/active\"; printf 'failed\\n' > \"$jobdir/sub\"; printf 'exit-code\\n' > \"$jobdir/result\"; fi",
 		"for f in description raw_path active sub result since; do printf '%s=' \"$f\"; tr '\\n' ' ' < \"$jobdir/$f\" 2>/dev/null || true; printf '\\n'; done",
@@ -1782,6 +1795,11 @@ func (h *Handler) dispatchGPUQueueOnce(ctx context.Context) {
 		log.Printf("GPU queue status warning: %s", status.Error)
 	}
 	h.reconcileRenderJobs(ctx, host, status.Jobs, status.Available && status.Error == "")
+	if counts, err := h.DB.RenderQueueStatusCounts(); err != nil || counts["running"] > 0 {
+		// A dashboard snapshot is not a queue lock. Keep the worker serial
+		// even when its running attempt is absent from the recent-job list.
+		return
+	}
 	openQueue, err := h.DB.ListOpenGPUQueueItems(1000)
 	if err != nil {
 		log.Printf("listing GPU queue for stale reconciliation failed: %v", err)
@@ -2044,7 +2062,7 @@ func populateGPUJobState(job *gpuJobView, out string) {
 		switch key {
 		case "Description":
 			job.Description = val
-		case "LoadedState":
+		case "LoadState":
 			job.LoadedState = val
 		case "ActiveState":
 			job.ActiveState = val
@@ -2374,7 +2392,7 @@ func (h *Handler) runpodWorkerView(ctx context.Context, view gpuWorkerView) gpuW
 		view.CreatedAt = pod.CreatedAt
 		view.SSHHost = pod.SSHHost(firstNonEmptyString(h.GPUWorkerUser, "root"))
 		if view.SSHHost != "" {
-			view.SSHHost = appendSSHIdentity(view.SSHHost, gpuWorkerSSHKeyPath)
+			view.SSHHost = appendSSHIdentity(view.SSHHost, h.gpuSSHKeyPath())
 		}
 		ip, _ := pod.SSHAddress()
 		view.IP = ip
@@ -2394,10 +2412,14 @@ func (h *Handler) withManagedWorkerSSHReadiness(ctx context.Context, view gpuWor
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
-	out, err := remoteSSH(probeCtx, view.SSHHost, "test -f /root/.streamctl-worker-ready")
+	out, err := remoteSSH(probeCtx, view.SSHHost, "if [ -f /root/.streamctl-worker-setup-failed ]; then printf 'setup-failed'; exit 1; fi; test -f /root/.streamctl-worker-ready")
 	if err != nil {
 		view.Status = "starting"
 		view.Error = fmt.Sprintf("worker setup not ready: %v: %s", err, strings.TrimSpace(out))
+		if strings.TrimSpace(out) == "setup-failed" {
+			view.Status = "setup failed"
+			view.Error = "Worker setup failed or timed out; inspect /root/streamctl-worker-setup.log, then destroy the worker before retrying."
+		}
 	}
 	return view
 }
@@ -2416,6 +2438,10 @@ func (h *Handler) runpodWorkerCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) ensureRunPodWorker(ctx context.Context, gpuType string) error {
+	// Manual creation and queue dispatch must share the list-before-create
+	// check; RunPod names are not unique and concurrent checks can race.
+	h.gpuCreateMu.Lock()
+	defer h.gpuCreateMu.Unlock()
 	client, err := h.runpodClient()
 	if err != nil {
 		return err
@@ -2429,7 +2455,7 @@ func (h *Handler) ensureRunPodWorker(ctx context.Context, gpuType string) error 
 			return nil
 		}
 	}
-	sshPublicKey, err := ensureGPUWorkerSSHPublicKey(gpuWorkerSSHKeyPath)
+	sshPublicKey, err := ensureGPUWorkerSSHPublicKey(h.gpuSSHKeyPath())
 	if err != nil {
 		return fmt.Errorf("reading SSH public key for RunPod: %v", err)
 	}
@@ -2448,7 +2474,7 @@ func (h *Handler) ensureRunPodWorker(ctx context.Context, gpuType string) error 
 		VolumeInGB:        80,
 		Ports:             []string{"22/tcp"},
 		Env:               env,
-		DockerStartCmd: []string{"bash", "-lc", strings.Join([]string{
+		DockerStartCmd: []string{"bash", "-lc", boundedWorkerSetup(strings.Join([]string{
 			"set -euo pipefail",
 			"apt-get update",
 			"DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server rclone ffmpeg ca-certificates util-linux curl git",
@@ -2463,9 +2489,9 @@ func (h *Handler) ensureRunPodWorker(ctx context.Context, gpuType string) error 
 			"git clone " + shellQuote(confRenderRepository) + " /root/conf-render",
 			"git -C /root/conf-render checkout " + shellQuote(confRenderRevision),
 			"/root/.local/bin/uv sync --frozen --directory /root/conf-render",
+			"timeout --kill-after=30s 180s /root/render-from-spaces.py --check",
 			"touch /root/.streamctl-worker-ready",
-			"exec /usr/sbin/sshd -D -e",
-		}, " && ")},
+		}, " && "))},
 	}); err != nil {
 		return err
 	}
@@ -2501,10 +2527,11 @@ func (h *Handler) runpodWorkerEnv(sshPublicKey string) (map[string]string, error
 		return nil, fmt.Errorf("reading rclone config: %w", err)
 	}
 	return map[string]string{
-		"SSH_PUBLIC_KEY":       strings.TrimSpace(sshPublicKey),
-		"RCLONE_CONFIG_B64":    base64.StdEncoding.EncodeToString(rcloneConfig),
-		"TRANSCODE_SCRIPT_B64": base64.StdEncoding.EncodeToString([]byte(gpuTranscodeScript())),
-		"RENDER_SCRIPT_B64":    base64.StdEncoding.EncodeToString([]byte(renderWorkerScript())),
+		"NVIDIA_DRIVER_CAPABILITIES": "compute,utility,video",
+		"SSH_PUBLIC_KEY":             strings.TrimSpace(sshPublicKey),
+		"RCLONE_CONFIG_B64":          base64.StdEncoding.EncodeToString(rcloneConfig),
+		"TRANSCODE_SCRIPT_B64":       base64.StdEncoding.EncodeToString([]byte(gpuTranscodeScript())),
+		"RENDER_SCRIPT_B64":          base64.StdEncoding.EncodeToString([]byte(renderWorkerScript())),
 	}, nil
 }
 
@@ -2609,6 +2636,10 @@ func readFirstExistingFile(files ...string) (string, error) {
 	return "", errors.New(strings.Join(errs, "; "))
 }
 
+func (h *Handler) gpuSSHKeyPath() string {
+	return firstNonEmptyString(h.GPUWorkerSSHKey, gpuWorkerSSHKeyPath)
+}
+
 func ensureGPUWorkerSSHPublicKey(privateKey string) (string, error) {
 	publicKey := privateKey + ".pub"
 	data, err := os.ReadFile(publicKey)
@@ -2696,6 +2727,7 @@ curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/root/.local/bin
 git clone %s /root/conf-render
 git -C /root/conf-render checkout %s
 /root/.local/bin/uv sync --frozen --directory /root/conf-render
+timeout --kill-after=30s 180s /root/render-from-spaces.py --check
 echo "$DROPLET_ID" >/root/droplet-id
 touch /root/.streamctl-worker-ready
 echo 'streamctl GPU worker ready'
