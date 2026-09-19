@@ -10,6 +10,8 @@ This repo contains everything needed to run it:
 - **`flake.nix`** — top-level Nix flake; defines the package, the NixOS module, and the host configuration
 - **`Makefile`** — orchestrates everything from your laptop
 
+For machine-specific additions, see [private deployment configuration](docs/private-deployment.md).
+
 ## Prometheus metrics
 
 Streamctl exposes HTTP request count, status, duration and in-flight metrics,

@@ -12,6 +12,10 @@ export DIGITALOCEAN_TOKEN
 TERRAFORM := $(shell if command -v terraform >/dev/null 2>&1; then printf 'terraform'; else printf 'nix develop --command terraform'; fi)
 NIXOS_REBUILD := $(shell if command -v nixos-rebuild >/dev/null 2>&1; then printf 'nixos-rebuild'; else printf 'nix develop --command nixos-rebuild'; fi)
 
+# Optional machine-local deployment settings, excluded from the public repo.
+-include ../.private/deploy.mk
+DEPLOY_FLAKE ?= .\#streamctl
+
 # Cache the droplet's IP across recipes that need it.
 # This shells out to terraform once per make invocation, not per recipe.
 IP := $(shell cd terraform && $(TERRAFORM) output -raw ipv4 2>/dev/null)
@@ -122,7 +126,7 @@ bootstrap-secret: check-ip ## Generate a streamctl login secret on the droplet.
 
 deploy: check-ip ## Push the current NixOS config to the droplet (build on droplet).
 	$(NIXOS_REBUILD) switch \
-	  --flake .#streamctl \
+	  --flake "$(DEPLOY_FLAKE)" \
 	  --target-host root@$(IP) \
 	  --build-host root@$(IP) \
           --no-reexec
@@ -132,7 +136,7 @@ deploy: check-ip ## Push the current NixOS config to the droplet (build on dropl
 
 deploy-local-build: check-ip ## Deploy but build locally, then copy result to droplet.
 	$(NIXOS_REBUILD) switch \
-	  --flake .#streamctl \
+	  --flake "$(DEPLOY_FLAKE)" \
 	  --target-host root@$(IP)
 	@$(MAKE) maybe-install-rclone-config
 	@$(MAKE) maybe-install-digitalocean-gpu-token
@@ -140,7 +144,7 @@ deploy-local-build: check-ip ## Deploy but build locally, then copy result to dr
 
 deploy-dry: check-ip ## Test the config without switching (validation only).
 	$(NIXOS_REBUILD) dry-activate \
-	  --flake .#streamctl \
+	  --flake "$(DEPLOY_FLAKE)" \
 	  --target-host root@$(IP) \
 	  --build-host root@$(IP)
 

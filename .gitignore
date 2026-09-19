@@ -2,3 +2,6 @@ rclone.conf
 streaminfos
 .DS_Store
 .env
+
+# Local deployment configuration and state.
+.private/
