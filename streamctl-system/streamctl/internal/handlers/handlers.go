@@ -191,6 +191,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/nostr/relays/delete/", h.mutation(http.HandlerFunc(h.nostrRelayDelete)))
 	go h.gpuQueueDispatcher()
 	go h.productionProxyDispatcher()
+	go h.recordingRegistrationDispatcher()
 }
 
 func redirectTo(path string) http.HandlerFunc {

@@ -53,15 +53,22 @@ func (db *DB) ProductionRender(id int64, conference string) (ProductionRender, e
 	`, id, strings.TrimSpace(conference)))
 }
 
-func (db *DB) CreateProductionRender(conference, name, manifest string, templateID *int64, talkID string) (int64, bool, error) {
+func (db *DB) CreateProductionRender(conference, name, manifest string, templateID *int64, talkID string, recordingKind ...string) (int64, bool, error) {
+	kind := ""
+	if len(recordingKind) > 0 {
+		kind = recordingKind[0]
+	}
+	if kind != "" && (kind != "full_talk" || templateID == nil || strings.TrimSpace(talkID) == "") {
+		return 0, false, fmt.Errorf("invalid recording designation")
+	}
 	conference, name, manifest, talkID = strings.TrimSpace(conference), strings.TrimSpace(name), strings.TrimSpace(manifest), strings.TrimSpace(talkID)
 	if conference == "" || name == "" || manifest == "" {
 		return 0, false, fmt.Errorf("conference, render name, and manifest are required")
 	}
 	result, err := db.Exec(`
-		INSERT OR IGNORE INTO production_renders (conference, name, manifest_json, template_id, talk_id)
-		VALUES (?, ?, ?, ?, ?)
-	`, conference, name, manifest, templateID, talkID)
+		INSERT OR IGNORE INTO production_renders (conference, name, manifest_json, template_id, talk_id, recording_kind)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, conference, name, manifest, templateID, talkID, kind)
 	if err != nil {
 		return 0, false, fmt.Errorf("create production render: %w", err)
 	}
@@ -83,9 +90,9 @@ func (db *DB) CreateProductionRender(conference, name, manifest string, template
 		}
 		result, err := db.Exec(`
 			UPDATE production_renders
-			SET name = ?, manifest_json = ?, archived_at = NULL, updated_at = CURRENT_TIMESTAMP
+			SET name = ?, manifest_json = ?, recording_kind = ?, archived_at = NULL, updated_at = CURRENT_TIMESTAMP
 			WHERE id = ? AND archived_at IS NOT NULL
-		`, name, manifest, id)
+		`, name, manifest, kind, id)
 		if err != nil {
 			return 0, false, fmt.Errorf("restore production render: %w", err)
 		}

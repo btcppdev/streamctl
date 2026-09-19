@@ -231,6 +231,9 @@ func (db *DB) Migrate() error {
 	if err := db.migrateProductionRenderColumns(); err != nil {
 		return err
 	}
+	if err := db.migrateRecordingRegistration(); err != nil {
+		return err
+	}
 	if err := db.migrateProductionProxyColumns(); err != nil {
 		return err
 	}
@@ -1199,7 +1202,12 @@ func (db *DB) EnqueueRenderJob(name, manifestJSON string) (*RenderJobQueueItem, 
 var ErrRenderAlreadyActive = fmt.Errorf("render already has an active job")
 
 func (db *DB) EnqueueProductionRender(id int64, name, manifestJSON string) (*RenderJobQueueItem, error) {
-	result, err := db.Exec(`
+	tx, err := db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	result, err := tx.Exec(`
 		INSERT INTO render_job_queue (production_render_id, name, manifest_json)
 		SELECT ?, ?, ?
 		WHERE NOT EXISTS (
@@ -1219,6 +1227,16 @@ func (db *DB) EnqueueProductionRender(id int64, name, manifestJSON string) (*Ren
 	}
 	queueID, err := result.LastInsertId()
 	if err != nil {
+		return nil, err
+	}
+	// Snapshot the explicit recording target atomically with submission. Generic
+	// renders (including copies) never acquire a website recording implicitly.
+	if _, err := tx.Exec(`INSERT INTO recording_registrations (queue_id, conference, talk_id)
+		SELECT ?, conference, talk_id FROM production_renders
+		WHERE id = ? AND recording_kind = 'full_talk' AND talk_id <> ''`, queueID, id); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	return db.GetRenderQueueItem(queueID)

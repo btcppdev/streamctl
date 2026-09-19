@@ -17,15 +17,17 @@ import (
 
 type productionRenderListItem struct {
 	db.ProductionRender
-	SegmentCount int
-	UpdatedLabel string
-	URL          string
-	Status       string
-	StatusLabel  string
-	BadgeClass   string
-	CanQueue     bool
-	Edited       bool
-	HasFinished  bool
+	SegmentCount    int
+	UpdatedLabel    string
+	URL             string
+	Status          string
+	StatusLabel     string
+	BadgeClass      string
+	CanQueue        bool
+	Edited          bool
+	HasFinished     bool
+	RecordingStatus string
+	RecordingError  string
 }
 
 type productionRendersPage struct {
@@ -88,6 +90,12 @@ func (h *Handler) productionRenders(w http.ResponseWriter, r *http.Request) {
 				UpdatedLabel: item.UpdatedAt.Format("2006-01-02 15:04"), URL: productionRenderURL(conference, item.ID),
 			}
 			decorateProductionRender(&view, states[item.ID])
+			if latest := states[item.ID].Latest; latest != nil && latest.Status == "finished" {
+				view.RecordingStatus, view.RecordingError, err = h.DB.RecordingRegistrationStatus(latest.ID)
+				if err != nil {
+					page.Error = err.Error()
+				}
+			}
 			page.Renders = append(page.Renders, view)
 		}
 	}
@@ -332,6 +340,17 @@ func (h *Handler) productionRenderGenerate(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	generated, skipped := 0, 0
+	// Only the full-talk generator opts into website recording registration.
+	// Merely having a talk association is not sufficient (e.g. future clips).
+	recordingKind := ""
+	for _, raw := range *definition.Segments {
+		var segment struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(raw, &segment) == nil && segment.Type == "streamctl.talkCuts" {
+			recordingKind = "full_talk"
+		}
+	}
 	for _, talk := range talks {
 		talkCuts := cuts[talk.TalkID]
 		if len(talkCuts) == 0 {
@@ -348,7 +367,7 @@ func (h *Handler) productionRenderGenerate(w http.ResponseWriter, r *http.Reques
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		_, created, err := h.DB.CreateProductionRender(conference, talk.Title, manifest, &templateID, talk.TalkID)
+		_, created, err := h.DB.CreateProductionRender(conference, talk.Title, manifest, &templateID, talk.TalkID, recordingKind)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

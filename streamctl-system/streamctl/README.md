@@ -26,6 +26,30 @@ streamctl/
 
 This means scheduled streams keep running even if the web app is restarted or crashes — systemd is the queue.
 
+## Full-talk recording registration
+
+Renders generated from templates containing `streamctl.talkCuts` are explicitly
+designated full-talk recordings. Blank renders, duplicated renders, and other
+talk-associated outputs are not automatically registered. That designation is
+retained when editing; queue submissions snapshot the conference/talk target.
+Existing generated talk-cut renders receive the designation during migration,
+but **past queue submissions are not retroactively registered**.
+
+After a successful render, the controller verifies the matching `ready.json`
+index in Spaces and uses the existing Bitcoin++ API token to PUT the video's
+object key to `/api/v1/conferences/{conference}/talks/{talk_id}/recording`.
+The token needs `recordings:write` and access to the relevant conference.
+The website creates/updates the recording idempotently; publication dates and
+social URLs are left untouched. No website credentials reach the GPU worker.
+
+Registration is durable and independent of rendering: failures retry after ten
+minutes, including after a controller restart, without re-rendering. Only the
+newest successful full-talk submission for a talk can register. Updates run one
+at a time, at most once every 125 seconds, below the website's 30/hour mutation
+limit (other clients sharing the token may still cause rate limiting). The
+Renders list shows pending, retrying, or registered status; retry errors are
+available in the status tooltip and controller logs.
+
 ## CLI flags
 
 ```
