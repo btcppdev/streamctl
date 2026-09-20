@@ -15,6 +15,8 @@ type ProductionProxyJob struct {
 	DurationMS int64
 	Progress   int
 	Stage      string
+	WorkerHost string
+	WorkerUnit string
 	LastError  string
 }
 
@@ -72,7 +74,7 @@ func (db *DB) EnqueueProductionProxyJob(source, proxy string) (ProductionProxyJo
 func (db *DB) ProductionProxyJobBySource(source string) (ProductionProxyJob, error) {
 	return scanProductionProxyJob(db.QueryRow(`
 		SELECT id, source_object_key, proxy_object_key, status, attempt_count,
-		       duration_ms, progress_percent, progress_stage, last_error
+		       duration_ms, progress_percent, progress_stage, last_error, worker_host, worker_unit
 		FROM production_proxy_jobs WHERE source_object_key = ?
 	`, strings.TrimSpace(source)))
 }
@@ -82,12 +84,16 @@ func (db *DB) RequeueInterruptedProductionProxyJobs() error {
 		UPDATE production_proxy_jobs
 		SET status = 'queued', progress_percent = 0, progress_stage = 'Waiting',
 		    last_error = 'streamctl restarted while preparing proxy', updated_at = CURRENT_TIMESTAMP
-		WHERE status = 'running'
+		WHERE status = 'running' AND worker_unit = ''
 	`)
 	return err
 }
 
 func (db *DB) ClaimProductionProxyJob() (ProductionProxyJob, error) {
+	return db.ClaimProductionProxyGPUJob("")
+}
+
+func (db *DB) ClaimProductionProxyGPUJob(host string) (ProductionProxyJob, error) {
 	tx, err := db.Begin()
 	if err != nil {
 		return ProductionProxyJob{}, err
@@ -95,19 +101,23 @@ func (db *DB) ClaimProductionProxyJob() (ProductionProxyJob, error) {
 	defer tx.Rollback()
 	job, err := scanProductionProxyJob(tx.QueryRow(`
 		SELECT id, source_object_key, proxy_object_key, status, attempt_count,
-		       duration_ms, progress_percent, progress_stage, last_error
+		       duration_ms, progress_percent, progress_stage, last_error, worker_host, worker_unit
 		FROM production_proxy_jobs WHERE status = 'queued' ORDER BY id LIMIT 1
 	`))
 	if err != nil {
 		return ProductionProxyJob{}, err
 	}
+	unit := ""
+	if host != "" {
+		unit = fmt.Sprintf("streamctl-gpu-proxy-%d-attempt-%d.service", job.ID, job.Attempts+1)
+	}
 	result, err := tx.Exec(`
 		UPDATE production_proxy_jobs
 		SET status = 'running', attempt_count = attempt_count + 1, started_at = CURRENT_TIMESTAMP,
 		    finished_at = NULL, progress_percent = 0, progress_stage = 'Starting',
-		    last_error = '', updated_at = CURRENT_TIMESTAMP
+		    last_error = '', worker_host = ?, worker_unit = ?, updated_at = CURRENT_TIMESTAMP
 		WHERE id = ? AND status = 'queued'
-	`, job.ID)
+	`, host, unit, job.ID)
 	if err != nil {
 		return ProductionProxyJob{}, err
 	}
@@ -118,6 +128,7 @@ func (db *DB) ClaimProductionProxyJob() (ProductionProxyJob, error) {
 	if err := tx.Commit(); err != nil {
 		return ProductionProxyJob{}, err
 	}
+	job.WorkerHost, job.WorkerUnit = host, unit
 	job.Status = "running"
 	job.Attempts++
 	job.Progress = 0
@@ -197,7 +208,7 @@ func (db *DB) ProductionProxyQueue(limit int) (ProductionProxyQueue, error) {
 	}
 	rows, err := db.Query(`
 		SELECT id, source_object_key, proxy_object_key, status, attempt_count,
-		       duration_ms, progress_percent, progress_stage, last_error
+		       duration_ms, progress_percent, progress_stage, last_error, worker_host, worker_unit
 		FROM production_proxy_jobs
 		WHERE status IN ('queued', 'running', 'failed')
 		ORDER BY CASE status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 WHEN 'failed' THEN 2 ELSE 3 END, id DESC
@@ -224,6 +235,48 @@ type productionProxyScanner interface {
 func scanProductionProxyJob(scanner productionProxyScanner) (ProductionProxyJob, error) {
 	var job ProductionProxyJob
 	err := scanner.Scan(&job.ID, &job.Source, &job.Proxy, &job.Status, &job.Attempts,
-		&job.DurationMS, &job.Progress, &job.Stage, &job.LastError)
+		&job.DurationMS, &job.Progress, &job.Stage, &job.LastError, &job.WorkerHost, &job.WorkerUnit)
 	return job, err
+}
+
+// Apply worker updates only to the attempt that is still running. A late result
+// from a lost worker must never complete a newer attempt.
+func (db *DB) UpdateProductionProxyAttempt(job ProductionProxyJob, status, stage string, progress int, duration int64, detail string) error {
+	if status != "running" && status != "finished" && status != "failed" && status != "queued" {
+		return fmt.Errorf("invalid proxy attempt status %q", status)
+	}
+	progress = max(0, min(100, progress))
+	result, err := db.Exec(`UPDATE production_proxy_jobs
+		SET status = ?, progress_stage = ?, progress_percent = ?, duration_ms = ?, last_error = ?,
+		    finished_at = CASE WHEN ? IN ('finished', 'failed') THEN CURRENT_TIMESTAMP ELSE NULL END,
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE id = ? AND status = 'running' AND worker_unit = ? AND attempt_count = ?`,
+		status, stage, progress, duration, detail, status, job.ID, job.WorkerUnit, job.Attempts)
+	if err != nil {
+		return err
+	}
+	changed, _ := result.RowsAffected()
+	if changed != 1 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (db *DB) RunningProductionProxyJobs() ([]ProductionProxyJob, error) {
+	rows, err := db.Query(`SELECT id, source_object_key, proxy_object_key, status, attempt_count,
+		duration_ms, progress_percent, progress_stage, last_error, worker_host, worker_unit
+		FROM production_proxy_jobs WHERE status = 'running' ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var jobs []ProductionProxyJob
+	for rows.Next() {
+		job, err := scanProductionProxyJob(rows)
+		if err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, job)
+	}
+	return jobs, rows.Err()
 }

@@ -86,3 +86,77 @@ func TestProductionProxyCountsAreConferenceScoped(t *testing.T) {
 		t.Fatalf("counts=%+v err=%v", counts, err)
 	}
 }
+
+func TestGPUPreviewSurvivesRestartAndIgnoresOldAttempt(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "streamctl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Migrate(); err != nil {
+		t.Fatal("migration must be idempotent:", err)
+	}
+	_, _, err = database.EnqueueProductionProxyJob("event/recordings/source.mp4", "event/recordings/workspace/source.proxy.mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := database.ClaimProductionProxyGPUJob("worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.WorkerUnit == "" || first.WorkerHost != "worker" {
+		t.Fatalf("missing worker identity: %+v", first)
+	}
+	if err := database.RequeueInterruptedProductionProxyJobs(); err != nil {
+		t.Fatal(err)
+	}
+	running, err := database.RunningProductionProxyJobs()
+	if err != nil || len(running) != 1 {
+		t.Fatalf("restart discarded GPU job: %+v %v", running, err)
+	}
+	if err := database.UpdateProductionProxyAttempt(first, "queued", "Waiting", 0, 0, "worker lost"); err != nil {
+		t.Fatal(err)
+	}
+	second, err := database.ClaimProductionProxyGPUJob("replacement")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.WorkerUnit == second.WorkerUnit {
+		t.Fatal("retry reused old attempt identity")
+	}
+	if err := database.UpdateProductionProxyAttempt(first, "finished", "Complete", 100, 1000, ""); err == nil {
+		t.Fatal("late result completed the wrong attempt")
+	}
+	if err := database.UpdateProductionProxyAttempt(second, "finished", "Complete", 100, 1000, ""); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestOnlyLegacyCPUPreviewIsRequeuedOnRestart(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "streamctl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = database.EnqueueProductionProxyJob("event/recordings/source.mp4", "event/recordings/workspace/source.proxy.mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, err := database.ClaimProductionProxyJob()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.RequeueInterruptedProductionProxyJobs(); err != nil {
+		t.Fatal(err)
+	}
+	current, err := database.ProductionProxyJobBySource(job.Source)
+	if err != nil || current.Status != "queued" {
+		t.Fatalf("legacy CPU job not migrated: %+v %v", current, err)
+	}
+}

@@ -274,6 +274,8 @@ func (db *DB) migrateProductionProxyColumns() error {
 		name string
 		sql  string
 	}{
+		{"worker_host", `ALTER TABLE production_proxy_jobs ADD COLUMN worker_host TEXT NOT NULL DEFAULT ''`},
+		{"worker_unit", `ALTER TABLE production_proxy_jobs ADD COLUMN worker_unit TEXT NOT NULL DEFAULT ''`},
 		{"progress_percent", `ALTER TABLE production_proxy_jobs ADD COLUMN progress_percent INTEGER NOT NULL DEFAULT 0`},
 		{"progress_stage", `ALTER TABLE production_proxy_jobs ADD COLUMN progress_stage TEXT NOT NULL DEFAULT 'Waiting'`},
 	}
