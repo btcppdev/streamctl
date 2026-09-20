@@ -21,6 +21,12 @@ func Open(path string) (*DB, error) {
 }
 
 const schema = `
+CREATE TABLE IF NOT EXISTS broadcast_plan_sync (
+	recording_id TEXT PRIMARY KEY,
+	stream_id INTEGER NOT NULL,
+	applied_fingerprint TEXT NOT NULL DEFAULT ''
+);
+
 CREATE TABLE IF NOT EXISTS endpoints (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	name TEXT NOT NULL,

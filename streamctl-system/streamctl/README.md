@@ -140,6 +140,36 @@ This service credential is intentionally separate from interactive OAuth login:
 the PAT belongs to the streamctl automation, while OAuth sessions identify the
 human administrator operating the UI.
 
+To import scheduled X broadcasts as playback jobs, set
+`services.streamctl.btcppXEndpointName` to the exact saved RTMP endpoint name whose
+credentials match the X source used by btcpp.dev. The API identifies the
+destination as `x`; it does not supply ingest credentials or a source ID, so
+this mapping must be configured explicitly. The production configuration uses
+`"Twitter Livestreams"`. Missing, duplicate, or disabled matching endpoints
+produce an import error; another endpoint is never selected as a fallback.
+Alternatively, configure `services.streamctl.btcppXEndpointID` instead of the
+name. Imports are disabled when neither is configured.
+The API token above and a Spaces rclone remote are also required.
+
+For a direct invocation, use `-btcpp-x-endpoint-name "Twitter Livestreams"`
+(or `-btcpp-x-endpoint-id ID`); the optional
+`-btcpp-plan-poll-interval` defaults to `3m`. On startup and each poll, streamctl
+reads `/api/v1/recording-broadcast-plans` and creates or updates a one-time job
+by recording ID using `scheduled_at` in UTC and the Spaces object key. Existing
+manual jobs with that recording ID are reused; multiple matching jobs are
+reported as an error for an operator to resolve. The imported playlist and
+RTMP destination are managed by the plan. Website HLS remains part of normal
+stream output. Job changes appear in the existing Streams page.
+
+Unchanged plans do not resync timers. Failed systemd updates are retried on the
+same saved job, including after a restart. Pending, failed, or cancelled plans
+disable matching future jobs. Plans with start times at or before the poll
+time are skipped to avoid replaying old broadcasts or disturbing playback.
+API failures or plans missing from a response do not delete existing jobs.
+Import errors are logged to the streamctl service journal. Allow enough lead
+time before the broadcast for polling and the existing prefetch/normalization
+workflow to finish.
+
 Set `services.streamctl.btcppAPITokenFile` to that path to enable the
 **Production → Timestamp** workspace. The workspace reads eligible talks from
 Bitcoin++, presents a conference selector and talk list, and keeps source

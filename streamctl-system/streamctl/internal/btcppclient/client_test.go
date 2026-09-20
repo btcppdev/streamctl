@@ -8,7 +8,26 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
+
+func TestClientListsBroadcastPlans(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/recording-broadcast-plans" || r.URL.RawQuery != "" || r.Header.Get("Authorization") != "Bearer secret" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL)
+		}
+		_, _ = w.Write([]byte(`{"data":[{"recording_id":"r1","title":"Talk","source":{"kind":"spaces","object_key":"dev26/recordings/talk.mp4"},"status":"scheduled","scheduled_at":"2026-09-21T10:00:00-05:00","destinations":["website_hls","x"]}],"meta":{"next_updated_after":"2026-09-20T12:00:00Z"}}`))
+	}))
+	defer server.Close()
+	client := &Client{BaseURL: server.URL, Token: "secret", HTTPClient: server.Client()}
+	plans, err := client.RecordingBroadcastPlans(context.Background())
+	if err != nil || len(plans) != 1 {
+		t.Fatalf("plans=%+v err=%v", plans, err)
+	}
+	if plans[0].RecordingID != "r1" || plans[0].Source.Kind != "spaces" || len(plans[0].Destinations) != 2 || !plans[0].ScheduledAt.Equal(time.Date(2026, 9, 21, 15, 0, 0, 0, time.UTC)) {
+		t.Fatalf("plan=%+v", plans[0])
+	}
+}
 
 func TestClientListsCandidatesAndNeverPlacesTokenInURL(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

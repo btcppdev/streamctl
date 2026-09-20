@@ -128,6 +128,18 @@
               description = "Root-readable 0400 bitcoin++ machine token used by production workspaces and broadcast status. Linked stream units receive a private copy through systemd credentials.";
             };
 
+            btcppXEndpointID = lib.mkOption {
+              type = lib.types.ints.unsigned;
+              default = 0;
+              description = "Saved X RTMP endpoint ID for importing website broadcast plans; use either ID or name.";
+            };
+
+            btcppXEndpointName = lib.mkOption {
+              type = lib.types.str;
+              default = "";
+              description = "Exact saved X RTMP endpoint name for importing website broadcast plans. Imports are disabled when neither ID nor name is configured.";
+            };
+
             gpuWorkerHost = lib.mkOption {
               type = lib.types.str;
               default = "";
@@ -358,6 +370,8 @@
                     ${lib.optionalString (cfg.btcppOAuthRedirectURL != "") "-btcpp-oauth-redirect-url=${lib.escapeShellArg cfg.btcppOAuthRedirectURL} \\"}
                     ${lib.optionalString (cfg.btcppAPITokenFile != "") "-btcpp-api-base=${lib.escapeShellArg cfg.btcppAPIBaseURL} \\"}
                     ${lib.optionalString (cfg.btcppAPITokenFile != "") "-btcpp-api-token-file=${lib.escapeShellArg cfg.btcppAPITokenFile} \\"}
+                    -btcpp-x-endpoint-id=${toString cfg.btcppXEndpointID} \
+                    -btcpp-x-endpoint-name=${lib.escapeShellArg cfg.btcppXEndpointName} \
                     -gpu-worker-host=${cfg.gpuWorkerHost} \
                     -gpu-worker-ssh-key=${cfg.dataDir}/gpu-worker-ssh-key \
                     -gpu-worker-command=${cfg.gpuWorkerCommand} \

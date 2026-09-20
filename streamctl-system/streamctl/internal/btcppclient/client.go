@@ -91,6 +91,28 @@ type Broadcast struct {
 	IsLive        bool    `json:"is_live"`
 }
 
+type RecordingBroadcastPlan struct {
+	RecordingID string `json:"recording_id"`
+	Title       string `json:"title"`
+	Source      struct {
+		Kind      string `json:"kind"`
+		ObjectKey string `json:"object_key"`
+	} `json:"source"`
+	Status       string    `json:"status"`
+	ScheduledAt  time.Time `json:"scheduled_at"`
+	Destinations []string  `json:"destinations"`
+}
+
+// Fetch the full snapshot so failed imports are retried and polling does not
+// lose updates sharing a cursor timestamp.
+func (client *Client) RecordingBroadcastPlans(ctx context.Context) ([]RecordingBroadcastPlan, error) {
+	var plans []RecordingBroadcastPlan
+	if err := client.do(ctx, http.MethodGet, "/api/v1/recording-broadcast-plans", nil, &plans); err != nil {
+		return nil, err
+	}
+	return plans, nil
+}
+
 func TokenFromFile(path string) (string, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"streamctl/internal/broadcastplans"
 	"streamctl/internal/btcppclient"
 	"streamctl/internal/btcppoauth"
 	"streamctl/internal/db"
@@ -68,6 +69,9 @@ func main() {
 		btcppOAuthRedirect  = flag.String("btcpp-oauth-redirect-url", "", "OAuth callback URL; defaults to <public-base-url>/oauth/callback")
 		btcppAPIBase        = flag.String("btcpp-api-base", "https://btcpp.dev", "bitcoin++ API base URL used by production workspaces and broadcast status")
 		btcppAPITokenFile   = flag.String("btcpp-api-token-file", "", "path to the bitcoin++ machine API token")
+		btcppXEndpointID    = flag.Int64("btcpp-x-endpoint-id", 0, "saved X RTMP endpoint ID for importing website broadcast plans; use either ID or name")
+		btcppXEndpointName  = flag.String("btcpp-x-endpoint-name", "", "exact saved X RTMP endpoint name for importing website broadcast plans")
+		btcppPlanInterval   = flag.Duration("btcpp-plan-poll-interval", 3*time.Minute, "interval between website broadcast plan imports")
 		gpuWorkerHost       = flag.String("gpu-worker-host", "", "SSH target for GPU transcode worker, e.g. ubuntu@1.2.3.4")
 		gpuWorkerSSHKey     = flag.String("gpu-worker-ssh-key", "", "managed worker SSH key path; defaults to the production data directory")
 		gpuWorkerCommand    = flag.String("gpu-worker-command", "/root/transcode-nvenc.sh", "command path on GPU worker used to process one Spaces path")
@@ -91,6 +95,16 @@ func main() {
 		runUser             = flag.String("run-user", "streamctl", "user to run streams as")
 	)
 	flag.Parse()
+	if *btcppXEndpointID < 0 || *btcppPlanInterval <= 0 {
+		log.Fatal("broadcast plan endpoint ID must be nonnegative and poll interval must be positive")
+	}
+	if *btcppXEndpointID > 0 && *btcppXEndpointName != "" {
+		log.Fatal("configure either -btcpp-x-endpoint-id or -btcpp-x-endpoint-name")
+	}
+	importBroadcastPlans := *btcppXEndpointID > 0 || *btcppXEndpointName != ""
+	if importBroadcastPlans && (strings.TrimSpace(*btcppAPITokenFile) == "" || strings.TrimSpace(*remote) == "") {
+		log.Fatal("broadcast plan imports require -btcpp-api-token-file and -remote")
+	}
 
 	secret := strings.TrimSpace(os.Getenv("STREAMCTL_SECRET"))
 	var oauthClient *btcppoauth.Client
@@ -204,6 +218,10 @@ func main() {
 	// Keep the interface nil when no API token is configured.
 	if btcppAPIClient != nil {
 		h.BTCPP = btcppAPIClient
+	}
+	if importBroadcastPlans {
+		planSync := &broadcastplans.Syncer{DB: database, Client: btcppAPIClient, Scheduler: sysd, XEndpointID: *btcppXEndpointID, XEndpointName: *btcppXEndpointName}
+		go planSync.Run(context.Background(), *btcppPlanInterval)
 	}
 
 	mux := http.NewServeMux()
