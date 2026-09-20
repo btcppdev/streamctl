@@ -22,6 +22,22 @@ class PreviewTests(unittest.TestCase):
         self.assertEqual(args[args.index("-chunk_duration") + 1], "1000000")
         self.assertIn("+faststart", args)
         self.assertIn("0:a:0?", args)
+        self.assertLess(args.index("-hwaccel"), args.index("-i"))
+        self.assertIn("scale_cuda=-2:480:interp_algo=bicubic:passthrough=0", args)
+        self.assertNotIn("-pix_fmt", args)
+
+    def test_unsupported_camera_formats_keep_nvenc_with_cpu_preprocessing(self):
+        for codec, pixel_format, expected in [("h264", "yuv420p", True), ("hevc", "yuv420p", True),
+                                             ("hevc", "yuv420p10le", False), ("h264", "yuv422p", False),
+                                             ("prores", "yuv422p10le", False)]:
+            with self.subTest(codec=codec, pixel_format=pixel_format), patch.object(
+                    proxy.subprocess, "check_output", return_value=json.dumps({"streams": [
+                        {"codec_name": codec, "pix_fmt": pixel_format}]})):
+                self.assertEqual(proxy.supports_cuda_preprocessing("source"), expected)
+        args = proxy.encode_args("inputs", "output", 480, False)
+        self.assertNotIn("-hwaccel", args)
+        self.assertIn("scale=-2:480", args)
+        self.assertIn("h264_nvenc", args)
 
     def test_failed_encode_never_uploads_ready_marker(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -40,6 +56,7 @@ class PreviewTests(unittest.TestCase):
 
             with patch.object(proxy, "run_progress", side_effect=progress), \
                  patch.object(proxy, "duration_ms", return_value=1000), \
+                 patch.object(proxy, "supports_cuda_preprocessing", return_value=True), \
                  patch.object(proxy.subprocess, "check_output", return_value="h264_nvenc"), \
                  patch.object(proxy.sys, "argv", ["prepare-proxy.py", str(root)]):
                 self.assertEqual(proxy.main(), 1)
@@ -51,6 +68,13 @@ class PreviewTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("rclone"), "ffmpeg and rclone required")
     def test_chunked_source_artifacts_and_timeline(self):
+        self.check_chunked_source(False)
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("rclone"), "ffmpeg and rclone required")
+    def test_chunked_source_with_audio(self):
+        self.check_chunked_source(True)
+
+    def check_chunked_source(self, with_audio):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             bucket, job = root / "bucket", root / "job"
@@ -58,10 +82,11 @@ class PreviewTests(unittest.TestCase):
             job.mkdir()
             # A local rclone backend exercises the actual transfer and marker
             # ordering without credentials or a cloud account.
+            audio_input = ["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000"] if with_audio else []
             for index in range(2):
                 subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
                                 "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=25",
-                                "-t", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                                *audio_input, "-t", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p",
                                 str(bucket / f"source{index}.mp4")], check=True)
             request = dict(remote=str(bucket), chunks=["source0.mp4", "source1.mp4"],
                            source="source0.mp4", sourceType="chunkedVideo", proxy="preview.proxy.mp4",
@@ -71,9 +96,9 @@ class PreviewTests(unittest.TestCase):
             use_gpu = os.environ.get("STREAMCTL_TEST_GPU") == "1"
 
             def encode(*args):
-                command = original_encode_args(*args)
+                command = original_encode_args(*args[:3], gpu_preprocessing=use_gpu and args[3])
                 if not use_gpu:
-                    # Only the codec is substituted. Real ffmpeg verifies concat,
+                    # GPU stages are substituted locally. Real ffmpeg verifies concat,
                     # audio-optional mapping, timestamps, muxing and keyframes.
                     for option in ("-rc", "-cq", "-b:v", "-forced-idr"):
                         i = command.index(option)
@@ -96,16 +121,25 @@ class PreviewTests(unittest.TestCase):
             metadata = json.loads((bucket / request["sidecar"]).read_text())
             status = json.loads((job / "status.json").read_text())
             self.assertEqual(status["state"], "finished")
-            self.assertEqual(metadata["source"]["durationMs"], 4000)
+            self.assertAlmostEqual(metadata["source"]["durationMs"], 4000, delta=100)
             self.assertEqual(len(metadata["source"]["chunks"]), 2)
             self.assertEqual(metadata["proxy"]["height"], 480)
             output = bucket / request["proxy"]
-            self.assertAlmostEqual(proxy.duration_ms(output), 4000, delta=100)
+            self.assertAlmostEqual(proxy.duration_ms(output), 4000, delta=150 if with_audio else 100)
+            streams = json.loads(subprocess.check_output([
+                "ffprobe", "-v", "error", "-show_streams", "-of", "json", str(output)], text=True))["streams"]
+            video = next(stream for stream in streams if stream["codec_type"] == "video")
+            self.assertEqual(video["codec_name"], "h264")
+            self.assertEqual(video["pix_fmt"], "yuv420p")
+            self.assertEqual(video["height"], 480)
+            self.assertEqual(any(stream["codec_type"] == "audio" for stream in streams), with_audio)
+            subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
+                            "-ss", "2.5", "-i", str(output), "-frames:v", "1", "-f", "null", "-"], check=True)
             frames = json.loads(subprocess.check_output([
                 "ffprobe", "-v", "error", "-select_streams", "v:0", "-skip_frame", "nokey",
                 "-show_frames", "-show_entries", "frame=best_effort_timestamp_time", "-of", "json", str(output)], text=True))
             times = [float(frame["best_effort_timestamp_time"]) for frame in frames["frames"]]
-            self.assertAlmostEqual(times[0], 0, delta=0.04)
+            self.assertAlmostEqual(times[0], 0, delta=0.1 if with_audio else 0.04)
             self.assertGreaterEqual(len(times), 4)
             self.assertTrue(all(b - a <= 1.05 for a, b in zip(times, times[1:])), times)
 

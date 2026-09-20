@@ -54,15 +54,30 @@ def run_progress(args, root, stage, duration=0):
             raise RuntimeError("".join(tail)[-4000:] or f"{args[0]} failed")
 
 
-def encode_args(concat, output, height):
-    # Decode/scale on CPU for compatibility with camera formats; NVENC handles
-    # H.264 encoding. Disable B frames to avoid a timestamp shift when
-    # make_zero compensates for negative decode timestamps. No CPU fallback.
+def supports_cuda_preprocessing(filename):
+    # The worker's FFmpeg 4.4 scale_cuda preserves the input pixel format.
+    # Restrict this path to formats NVDEC can decode and H.264 NVENC can encode
+    # without a CPU pixel-format conversion. Keep other camera formats usable.
+    info = json.loads(subprocess.check_output([
+        "ffprobe", "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=codec_name,pix_fmt", "-of", "json", str(filename)], text=True))
+    video = (info.get("streams") or [{}])[0]
+    return video.get("codec_name") in ("h264", "hevc") and video.get("pix_fmt") == "yuv420p"
+
+
+def encode_args(concat, output, height, gpu_preprocessing=True):
+    # Keep decoded frames on the GPU through resizing and NVENC. Disable B
+    # frames to avoid a timestamp shift from make_zero and decode reordering.
+    # One host decode thread prevents FFmpeg sizing the NVDEC surface pool from
+    # the shared host's CPU count, exceeding hardware limits on large machines.
+    decoding = ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda", "-threads", "1"] if gpu_preprocessing else []
+    scaling = f"scale_cuda=-2:{height}:interp_algo=bicubic:passthrough=0" if gpu_preprocessing else f"scale=-2:{height}"
+    pixel_format = [] if gpu_preprocessing else ["-pix_fmt", "yuv420p"]
     return ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-            "-fflags", "+genpts", "-f", "concat", "-safe", "0", "-i", str(concat),
+            "-fflags", "+genpts", *decoding, "-f", "concat", "-safe", "0", "-i", str(concat),
             "-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn",
-            "-vf", f"scale=-2:{height}", "-c:v", "h264_nvenc", "-preset", "p4",
-            "-rc", "vbr", "-cq", "26", "-b:v", "0", "-bf", "0", "-pix_fmt", "yuv420p",
+            "-vf", scaling, "-c:v", "h264_nvenc", "-preset", "p4",
+            "-rc", "vbr", "-cq", "26", "-b:v", "0", "-bf", "0", *pixel_format,
             "-force_key_frames", "expr:gte(t,n_forced*1)", "-forced-idr", "1",
             "-c:a", "aac", "-b:a", "96k", "-ac", "2",
             "-chunk_duration", "1000000", "-movflags", "+faststart",
@@ -83,6 +98,7 @@ def prepare(request, root):
     if "h264_nvenc" not in encoders:
         raise RuntimeError("Worker ffmpeg does not support h264_nvenc")
     metadata_chunks, inputs, source_duration = [], [], 0
+    gpu_preprocessing = True
 
     def transfer(source, destination, stage):
         run_progress(["rclone", "--stats", "1s", "--stats-one-line",
@@ -93,6 +109,7 @@ def prepare(request, root):
         local = work / f"input-{index:05d}.mp4"
         transfer(remote + key, local, f"Downloading chunk {index+1} of {len(chunks)}")
         source_duration += duration_ms(local)
+        gpu_preprocessing = supports_cuda_preprocessing(local) and gpu_preprocessing
         stat = local.stat()
         metadata_chunks.append(dict(path=key, size=stat.st_size,
                                     modifiedAt=datetime.datetime.fromtimestamp(
@@ -101,8 +118,10 @@ def prepare(request, root):
     concat = work / "inputs.txt"
     concat.write_text("".join(inputs))
     output = work / "proxy.mp4"
-    run_progress(encode_args(concat, output, request["height"]), root,
-                 "Encoding proxy on GPU", source_duration)
+    stage = "GPU decoding, resizing and encoding" if gpu_preprocessing else "GPU encoding; CPU decoding/resizing for source format"
+    print(stage, flush=True)
+    run_progress(encode_args(concat, output, request["height"], gpu_preprocessing), root,
+                 stage, source_duration)
     duration = duration_ms(output)
     metadata = dict(
         version=request["version"], generatedAt=datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -110,6 +129,7 @@ def prepare(request, root):
                     durationMs=source_duration, chunks=metadata_chunks),
         proxy=dict(path=request["proxy"], durationMs=duration, height=request["height"],
                    videoCodec="h264", encoder="h264_nvenc", cq=26,
+                   videoProcessing="cuda" if gpu_preprocessing else "software",
                    keyframeIntervalMs=1000, interleaveDurationMs=1000,
                    audioCodec="aac", audioBitrate="96k"))
     sidecar = work / "proxy.json"
