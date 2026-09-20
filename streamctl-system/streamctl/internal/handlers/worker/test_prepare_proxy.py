@@ -105,6 +105,7 @@ class PreviewTests(unittest.TestCase):
                 "ffprobe", "-v", "error", "-select_streams", "v:0", "-skip_frame", "nokey",
                 "-show_frames", "-show_entries", "frame=best_effort_timestamp_time", "-of", "json", str(output)], text=True))
             times = [float(frame["best_effort_timestamp_time"]) for frame in frames["frames"]]
+            self.assertAlmostEqual(times[0], 0, delta=0.04)
             self.assertGreaterEqual(len(times), 4)
             self.assertTrue(all(b - a <= 1.05 for a, b in zip(times, times[1:])), times)
 

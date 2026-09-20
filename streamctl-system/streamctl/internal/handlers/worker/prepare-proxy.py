@@ -56,12 +56,13 @@ def run_progress(args, root, stage, duration=0):
 
 def encode_args(concat, output, height):
     # Decode/scale on CPU for compatibility with camera formats; NVENC handles
-    # H.264 encoding. Do not silently fall back to software encoding.
+    # H.264 encoding. Disable B frames to avoid a timestamp shift when
+    # make_zero compensates for negative decode timestamps. No CPU fallback.
     return ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
             "-fflags", "+genpts", "-f", "concat", "-safe", "0", "-i", str(concat),
             "-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn",
             "-vf", f"scale=-2:{height}", "-c:v", "h264_nvenc", "-preset", "p4",
-            "-rc", "vbr", "-cq", "26", "-b:v", "0", "-pix_fmt", "yuv420p",
+            "-rc", "vbr", "-cq", "26", "-b:v", "0", "-bf", "0", "-pix_fmt", "yuv420p",
             "-force_key_frames", "expr:gte(t,n_forced*1)", "-forced-idr", "1",
             "-c:a", "aac", "-b:a", "96k", "-ac", "2",
             "-chunk_duration", "1000000", "-movflags", "+faststart",
@@ -115,9 +116,15 @@ def prepare(request, root):
     sidecar.write_text(json.dumps(metadata, indent=2) + "\n")
     # Metadata is the ready marker. Invalidate an older marker before replacing
     # its MP4 so an interrupted upload cannot be mistaken for a prepared source.
-    removed = subprocess.run(["rclone", "deletefile", "--retries", "1", remote + request["sidecar"]],
-                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    if removed.returncode not in (0, 4):  # rclone: 4 means the file is absent
+    # Older worker rclone versions report a missing deletefile target as a
+    # generic error. A filtered directory delete is idempotent across versions.
+    if "\n" in request["sidecar"] or "\r" in request["sidecar"]:
+        raise ValueError("Invalid metadata object key")
+    marker_list = work / "metadata-to-remove.txt"
+    marker_list.write_text(request["sidecar"] + "\n")
+    removed = subprocess.run(["rclone", "delete", remote, "--files-from-raw", str(marker_list),
+                              "--retries", "1"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if removed.returncode:
         raise RuntimeError("Remove old preview metadata: " + removed.stderr[-3000:])
     transfer(output, remote + request["proxy"], "Uploading proxy")
     transfer(sidecar, remote + request["sidecar"], "Uploading metadata")
