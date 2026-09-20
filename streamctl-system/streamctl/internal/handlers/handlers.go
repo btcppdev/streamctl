@@ -82,10 +82,9 @@ type Handler struct {
 	BTCPP               productionCandidatesClient
 	BTCPPBaseURL        string
 
-	funcs        template.FuncMap
-	gpuQueueMu   sync.Mutex
-	gpuCreateMu  sync.Mutex
-	proxyQueueMu sync.Mutex
+	funcs       template.FuncMap
+	gpuQueueMu  sync.Mutex
+	gpuCreateMu sync.Mutex
 }
 
 type productionCandidatesClient interface {
@@ -190,8 +189,12 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/nostr/relays/create", h.mutation(http.HandlerFunc(h.nostrRelayCreate)))
 	mux.Handle("/nostr/relays/update/", h.mutation(http.HandlerFunc(h.nostrRelayUpdate)))
 	mux.Handle("/nostr/relays/delete/", h.mutation(http.HandlerFunc(h.nostrRelayDelete)))
+	if h.DB != nil {
+		if err := h.DB.RequeueInterruptedProductionProxyJobs(); err != nil {
+			log.Printf("requeueing interrupted CPU previews: %v", err)
+		}
+	}
 	go h.gpuQueueDispatcher()
-	go h.productionProxyDispatcher()
 	go h.recordingRegistrationDispatcher()
 }
 
@@ -1782,6 +1785,10 @@ func (h *Handler) dispatchGPUQueueOnce(ctx context.Context) {
 			queuedCount, _ = countGPUQueueStates(openQueue)
 		}
 		h.reconcileUnavailableRenderQueue(worker)
+		h.reconcileUnavailableProxyQueue(worker)
+		if counts, err := h.DB.ProductionProxyQueue(1); err == nil {
+			queuedCount += counts.Queued
+		}
 		if renderCounts, err := h.DB.RenderQueueStatusCounts(); err != nil {
 			log.Printf("counting queued render jobs failed: %v", err)
 		} else {
@@ -1810,6 +1817,13 @@ func (h *Handler) dispatchGPUQueueOnce(ctx context.Context) {
 		log.Printf("GPU queue status warning: %s", status.Error)
 	}
 	h.reconcileRenderJobs(ctx, host, status.Jobs, status.Available && status.Error == "")
+	h.reconcileProxyJobs(ctx)
+	if counts, err := h.DB.ProductionProxyQueue(1); err != nil || counts.Running > 0 {
+		return
+	}
+	if !status.Available || status.Error != "" {
+		return
+	}
 	if counts, err := h.DB.RenderQueueStatusCounts(); err != nil || counts["running"] > 0 {
 		// A dashboard snapshot is not a queue lock. Keep the worker serial
 		// even when its running attempt is absent from the recent-job list.
@@ -1826,6 +1840,9 @@ func (h *Handler) dispatchGPUQueueOnce(ctx context.Context) {
 			log.Printf("GPU queue dispatch skipped: active job %s raw=%s active=%s result=%s", job.UnitName, job.RawPath, job.ActiveState, job.Result)
 			return
 		}
+	}
+	if h.dispatchNextProxy(ctx, host) {
+		return
 	}
 	item, err := h.DB.NextQueuedGPUJob()
 	if err != nil {
@@ -1929,6 +1946,10 @@ func (h *Handler) destroyManagedGPUAfterTerminalJob(ctx context.Context, job gpu
 	}
 	if renderCounts["queued"] > 0 || renderCounts["running"] > 0 {
 		log.Printf("GPU worker cleanup skipped after job %s: render queue still has open work", job.UnitName)
+		return
+	}
+	proxyCounts, err := h.DB.ProductionProxyQueue(1)
+	if err != nil || proxyCounts.Queued > 0 || proxyCounts.Running > 0 {
 		return
 	}
 	if h.hasRunPodToken() {
@@ -2492,7 +2513,7 @@ func (h *Handler) ensureRunPodWorker(ctx context.Context, gpuType string) error 
 		DockerStartCmd: []string{"bash", "-lc", boundedWorkerSetup(strings.Join([]string{
 			"set -euo pipefail",
 			"apt-get update",
-			"DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server rclone ffmpeg ca-certificates util-linux curl git",
+			"DEBIAN_FRONTEND=noninteractive apt-get install -y python3 openssh-server rclone ffmpeg ca-certificates util-linux curl git",
 			"mkdir -p /run/sshd /root/.ssh",
 			"printf '%s\n' \"$SSH_PUBLIC_KEY\" > /root/.ssh/authorized_keys",
 			"chmod 700 /root/.ssh && chmod 600 /root/.ssh/authorized_keys",
@@ -2724,7 +2745,7 @@ func (h *Handler) gpuWorkerUserData() (string, error) {
 set -euxo pipefail
 DROPLET_ID="$(curl -fsS http://169.254.169.254/metadata/v1/id || true)"
 apt-get update
-DEBIAN_FRONTEND=noninteractive apt-get install -y ffmpeg rclone curl util-linux git
+DEBIAN_FRONTEND=noninteractive apt-get install -y python3 ffmpeg rclone curl util-linux git
 install -d -m 0700 /root
 base64 -d >/root/rclone.conf <<'STREAMCTL_RCLONE'
 %s

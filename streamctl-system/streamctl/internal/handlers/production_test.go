@@ -590,23 +590,6 @@ func TestRcloneEnvRemovesAmbientFileFilters(t *testing.T) {
 	}
 }
 
-func TestTransferPercent(t *testing.T) {
-	for _, test := range []struct {
-		line string
-		want int
-		ok   bool
-	}{
-		{"Transferred: 1.000 GiB / 4.000 GiB, 25%, 10 MiB/s, ETA 5m", 25, true},
-		{"Transferred: 0 B / 0 B, -, 0 B/s, ETA -", 0, false},
-		{"2026/09/02 10:00:00 ERROR : upload failed", 0, false},
-	} {
-		got, ok := transferPercent(test.line)
-		if got != test.want || ok != test.ok {
-			t.Errorf("transferPercent(%q) = %d, %v; want %d, %v", test.line, got, ok, test.want, test.ok)
-		}
-	}
-}
-
 func TestProductionCutsSavePersistsFormRanges(t *testing.T) {
 	database := productionHandlerTestDB(t)
 	h := &Handler{DB: database}

@@ -1,26 +1,18 @@
 package handlers
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
-	"math"
 	"net/http"
-	"os"
 	"os/exec"
 	"path"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
-
-	"streamctl/internal/db"
 )
 
 const (
@@ -54,7 +46,9 @@ type productionProxyMetadataArtifact struct {
 	DurationMS           int64  `json:"durationMs"`
 	Height               int    `json:"height"`
 	VideoCodec           string `json:"videoCodec"`
-	CRF                  int    `json:"crf"`
+	Encoder              string `json:"encoder,omitempty"`
+	CQ                   int    `json:"cq,omitempty"`
+	CRF                  int    `json:"crf,omitempty"`
 	KeyframeIntervalMS   int    `json:"keyframeIntervalMs"`
 	InterleaveDurationMS int    `json:"interleaveDurationMs,omitempty"`
 	AudioCodec           string `json:"audioCodec"`
@@ -98,7 +92,7 @@ func (h *Handler) productionProxyPrepare(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	if queued > 0 {
-		go h.dispatchProductionProxyQueue(context.Background())
+		go h.dispatchGPUQueueOnce(context.Background())
 	}
 	message := "No new editing proxy jobs were needed."
 	if queued == 1 {
@@ -149,7 +143,7 @@ func (h *Handler) productionProxyRequeue(w http.ResponseWriter, r *http.Request)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	go h.dispatchProductionProxyQueue(context.Background())
+	go h.dispatchGPUQueueOnce(context.Background())
 	http.Redirect(w, r, "/worker?requeued_proxy="+strconv.FormatInt(id, 10), http.StatusSeeOther)
 }
 
@@ -322,276 +316,6 @@ func (h *Handler) readProductionProxyMetadata(ctx context.Context, proxy string)
 		return productionProxyMetadata{}, fmt.Errorf("read %s: incompatible proxy metadata", sidecar)
 	}
 	return metadata, nil
-}
-
-func (h *Handler) productionProxyDispatcher() {
-	if h.DB == nil || strings.TrimSpace(h.Remote) == "" {
-		return
-	}
-	if err := h.DB.RequeueInterruptedProductionProxyJobs(); err != nil {
-		log.Printf("requeueing interrupted production proxies failed: %v", err)
-	}
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-	for {
-		h.dispatchProductionProxyQueue(context.Background())
-		<-ticker.C
-	}
-}
-
-func (h *Handler) dispatchProductionProxyQueue(ctx context.Context) {
-	if h.DB == nil || strings.TrimSpace(h.Remote) == "" {
-		return
-	}
-	h.proxyQueueMu.Lock()
-	defer h.proxyQueueMu.Unlock()
-	for {
-		job, err := h.DB.ClaimProductionProxyJob()
-		if errors.Is(err, sql.ErrNoRows) {
-			return
-		}
-		if err != nil {
-			log.Printf("claiming production proxy job failed: %v", err)
-			return
-		}
-		durationMS, err := h.prepareProductionProxy(ctx, job)
-		if err != nil {
-			log.Printf("prepare production proxy %s: %v", job.Source, err)
-			if dbErr := h.DB.FailProductionProxyJob(job.ID, err); dbErr != nil {
-				log.Printf("marking production proxy %d failed: %v", job.ID, dbErr)
-			}
-		} else if err := h.DB.FinishProductionProxyJob(job.ID, durationMS); err != nil {
-			log.Printf("finishing production proxy %d failed: %v", job.ID, err)
-		}
-	}
-}
-
-func (h *Handler) prepareProductionProxy(parent context.Context, job db.ProductionProxyJob) (int64, error) {
-	ctx, cancel := context.WithTimeout(parent, 48*time.Hour)
-	defer cancel()
-	source, err := h.logicalMediaSource(ctx, job.Source)
-	if err != nil {
-		return 0, fmt.Errorf("locate source sequence: %w", err)
-	}
-	chunks := source.Chunks
-	if len(chunks) == 0 {
-		chunks = []string{source.Path}
-	}
-	cacheDir := strings.TrimSpace(h.CacheDir)
-	if cacheDir == "" {
-		cacheDir = os.TempDir()
-	}
-	if err := os.MkdirAll(cacheDir, 0o750); err != nil {
-		return 0, fmt.Errorf("create proxy cache: %w", err)
-	}
-	workDir, err := os.MkdirTemp(cacheDir, "production-proxy-")
-	if err != nil {
-		return 0, fmt.Errorf("create proxy workspace: %w", err)
-	}
-	defer os.RemoveAll(workDir)
-
-	var concat bytes.Buffer
-	var sourceDurationMS int64
-	chunkMetadata := make([]productionProxyMetadataChunk, 0, len(chunks))
-	for i, objectKey := range chunks {
-		extension := strings.ToLower(path.Ext(objectKey))
-		if extension == "" {
-			extension = ".mp4"
-		}
-		local := filepath.Join(workDir, fmt.Sprintf("input-%05d%s", i, extension))
-		stage := fmt.Sprintf("Downloading chunk %d of %d", i+1, len(chunks))
-		h.updateProductionProxyProgress(job.ID, stage, 0)
-		if err := h.runProxyRclone(ctx, job.ID, stage, "copyto", "--no-traverse", h.remotePath(objectKey), local); err != nil {
-			return 0, fmt.Errorf("download %s: %w", objectKey, err)
-		}
-		if chunkDurationMS, err := proxyDurationMS(ctx, local); err == nil {
-			sourceDurationMS += chunkDurationMS
-		}
-		chunkInfo := productionProxyMetadataChunk{Path: objectKey}
-		if fileInfo, err := os.Stat(local); err == nil {
-			chunkInfo.Size = fileInfo.Size()
-			chunkInfo.ModifiedAt = fileInfo.ModTime().UTC()
-		}
-		chunkMetadata = append(chunkMetadata, chunkInfo)
-		fmt.Fprintf(&concat, "file '%s'\n", filepath.ToSlash(local))
-	}
-	concatPath := filepath.Join(workDir, "inputs.txt")
-	if err := os.WriteFile(concatPath, concat.Bytes(), 0o600); err != nil {
-		return 0, err
-	}
-	output := filepath.Join(workDir, "proxy.mp4")
-	h.updateProductionProxyProgress(job.ID, "Encoding proxy", 0)
-	if err := h.runProxyFFmpeg(ctx, job.ID, sourceDurationMS,
-		"-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-		"-fflags", "+genpts",
-		"-f", "concat", "-safe", "0", "-i", concatPath,
-		"-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn",
-		"-vf", "scale=-2:"+strconv.Itoa(productionProxyHeight),
-		"-c:v", "libx264", "-preset", "veryfast", "-crf", "26", "-pix_fmt", "yuv420p",
-		"-force_key_frames", "expr:gte(t,n_forced*1)",
-		"-c:a", "aac", "-b:a", "96k", "-ac", "2",
-		// Group one second per stream inside the single MP4. Per-packet
-		// interleaving otherwise produces huge sample tables on all-day sources.
-		"-chunk_duration", "1000000",
-		"-movflags", "+faststart", "-avoid_negative_ts", "make_zero", output,
-	); err != nil {
-		return 0, fmt.Errorf("encode editing proxy: %w", err)
-	}
-	durationMS, err := proxyDurationMS(ctx, output)
-	if err != nil {
-		return 0, err
-	}
-	h.updateProductionProxyProgress(job.ID, "Uploading proxy", 0)
-	if err := h.runProxyRclone(ctx, job.ID, "Uploading proxy", "copyto", "--no-traverse", output, h.remotePath(job.Proxy)); err != nil {
-		return 0, fmt.Errorf("upload %s: %w", job.Proxy, err)
-	}
-	metadata := productionProxyMetadata{
-		Version:     productionProxyArtifactVersion,
-		GeneratedAt: time.Now().UTC(),
-		Source: productionProxyMetadataSource{
-			Path: job.Source, Type: source.SourceType, DurationMS: sourceDurationMS, Chunks: chunkMetadata,
-		},
-		Proxy: productionProxyMetadataArtifact{
-			Path: job.Proxy, DurationMS: durationMS, Height: productionProxyHeight,
-			VideoCodec: "h264", CRF: 26, KeyframeIntervalMS: 1000,
-			AudioCodec: "aac", AudioBitrate: "96k", InterleaveDurationMS: 1000,
-		},
-	}
-	metadataJSON, err := json.MarshalIndent(metadata, "", "  ")
-	if err != nil {
-		return 0, fmt.Errorf("encode proxy metadata: %w", err)
-	}
-	metadataPath := filepath.Join(workDir, "proxy.json")
-	if err := os.WriteFile(metadataPath, append(metadataJSON, '\n'), 0o600); err != nil {
-		return 0, fmt.Errorf("write proxy metadata: %w", err)
-	}
-	h.updateProductionProxyProgress(job.ID, "Uploading metadata", 0)
-	sidecar := productionProxySidecarObjectKey(job.Proxy)
-	if err := h.runProxyRclone(ctx, job.ID, "Uploading metadata", "copyto", "--no-traverse", metadataPath, h.remotePath(sidecar)); err != nil {
-		return 0, fmt.Errorf("upload %s: %w", sidecar, err)
-	}
-	return durationMS, nil
-}
-
-func (h *Handler) updateProductionProxyProgress(id int64, stage string, percent int) {
-	if err := h.DB.UpdateProductionProxyJobProgress(id, stage, percent); err != nil {
-		log.Printf("updating production proxy %d progress failed: %v", id, err)
-	}
-}
-
-func (h *Handler) runProxyFFmpeg(ctx context.Context, jobID, durationMS int64, args ...string) error {
-	if len(args) == 0 {
-		return errors.New("ffmpeg output path is required")
-	}
-	output := args[len(args)-1]
-	args = append(args[:len(args)-1], "-progress", "pipe:1", "-nostats", output)
-	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return err
-	}
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	lastPercent := -1
-	scanner := bufio.NewScanner(stdout)
-	for scanner.Scan() {
-		key, value, ok := strings.Cut(scanner.Text(), "=")
-		if !ok || key != "out_time_us" || durationMS <= 0 {
-			continue
-		}
-		microseconds, err := strconv.ParseInt(value, 10, 64)
-		if err != nil {
-			continue
-		}
-		percent := int(microseconds / 1000 * 100 / durationMS)
-		if percent > 99 {
-			percent = 99
-		}
-		if percent != lastPercent {
-			h.updateProductionProxyProgress(jobID, "Encoding proxy", percent)
-			lastPercent = percent
-		}
-	}
-	scanErr := scanner.Err()
-	waitErr := cmd.Wait()
-	if waitErr != nil {
-		return fmt.Errorf("%s", commandError(stderr.Bytes(), waitErr))
-	}
-	return scanErr
-}
-
-func proxyDurationMS(ctx context.Context, filename string) (int64, error) {
-	cmd := exec.CommandContext(ctx, "ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", filename)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return 0, fmt.Errorf("verify proxy: %s", commandError(out, err))
-	}
-	seconds, err := strconv.ParseFloat(strings.TrimSpace(string(out)), 64)
-	if err != nil || seconds <= 0 {
-		return 0, fmt.Errorf("verify proxy: invalid duration %q", strings.TrimSpace(string(out)))
-	}
-	return int64(math.Round(seconds * 1000)), nil
-}
-
-func (h *Handler) runProxyRclone(ctx context.Context, jobID int64, stage string, args ...string) error {
-	args = append([]string{"--stats", "1s", "--stats-one-line", "--stats-log-level", "NOTICE"}, args...)
-	cmd := exec.CommandContext(ctx, "rclone", args...)
-	cmd.Env = rcloneEnv(h.RcloneConfig)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	pipe, err := cmd.StderrPipe()
-	if err != nil {
-		return err
-	}
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	scanner := bufio.NewScanner(pipe)
-	scanner.Split(splitCRLF)
-	lastPercent := -1
-	for scanner.Scan() {
-		line := scanner.Text()
-		stderr.WriteString(line)
-		stderr.WriteByte('\n')
-		if percent, ok := transferPercent(line); ok && percent != lastPercent {
-			h.updateProductionProxyProgress(jobID, stage, percent)
-			lastPercent = percent
-		}
-	}
-	scanErr := scanner.Err()
-	waitErr := cmd.Wait()
-	if waitErr != nil {
-		return fmt.Errorf("%s", commandError(append(stdout.Bytes(), stderr.Bytes()...), waitErr))
-	}
-	return scanErr
-}
-
-func splitCRLF(data []byte, atEOF bool) (advance int, token []byte, err error) {
-	for i, b := range data {
-		if b == '\r' || b == '\n' {
-			return i + 1, data[:i], nil
-		}
-	}
-	if atEOF && len(data) > 0 {
-		return len(data), data, nil
-	}
-	return 0, nil, nil
-}
-
-func transferPercent(line string) (int, bool) {
-	percentAt := strings.IndexByte(line, '%')
-	if percentAt < 1 {
-		return 0, false
-	}
-	start := percentAt - 1
-	for start >= 0 && line[start] >= '0' && line[start] <= '9' {
-		start--
-	}
-	percent, err := strconv.Atoi(line[start+1 : percentAt])
-	return percent, err == nil && percent >= 0 && percent <= 100
 }
 
 func commandError(output []byte, err error) string {
