@@ -1,0 +1,12 @@
+diff --git a/src/conf_render/ffmpeg.py b/src/conf_render/ffmpeg.py
+--- a/src/conf_render/ffmpeg.py
++++ b/src/conf_render/ffmpeg.py
+@@ -236,7 +236,7 @@
+         f"[{audio_label}]afade=t=in:st=0:d={ffmpeg_seconds(fade_ms)},"
+         f"afade=t=out:st={ffmpeg_seconds(fade_out_ms)}:d={ffmpeg_seconds(fade_ms)}[aout]"
+     )
+-    return ";\n".join(filters) + ";\n"
++    return ";\n".join(filters)
+ 
+ 
+ def build_command(

@@ -43,6 +43,9 @@ var templateFS embed.FS
 //go:embed worker/render-from-spaces.py
 var renderWorkerScriptText string
 
+//go:embed worker/conf-render-ffmpeg-compat.patch
+var confRenderFFmpegCompatibilityPatch string
+
 const (
 	gpuWorkerSSHKeyPath  = "/var/lib/streamctl/gpu-worker-ssh-key"
 	confRenderRepository = "https://github.com/jgb95/conf-render.git"
@@ -2524,6 +2527,7 @@ func (h *Handler) ensureRunPodWorker(ctx context.Context, gpuType string) error 
 			"curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/root/.local/bin sh",
 			"git clone " + shellQuote(confRenderRepository) + " /root/conf-render",
 			"git -C /root/conf-render checkout " + shellQuote(confRenderRevision),
+			confRenderCompatibilityCommand(),
 			"/root/.local/bin/uv sync --frozen --directory /root/conf-render",
 			"timeout --kill-after=30s 180s /root/render-from-spaces.py --check",
 			"touch /root/.streamctl-worker-ready",
@@ -2762,12 +2766,13 @@ chmod 0755 /root/render-from-spaces.py
 curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/root/.local/bin sh
 git clone %s /root/conf-render
 git -C /root/conf-render checkout %s
+%s
 /root/.local/bin/uv sync --frozen --directory /root/conf-render
 timeout --kill-after=30s 180s /root/render-from-spaces.py --check
 echo "$DROPLET_ID" >/root/droplet-id
 touch /root/.streamctl-worker-ready
 echo 'streamctl GPU worker ready'
-`, base64.StdEncoding.EncodeToString(rcloneConfig), base64.StdEncoding.EncodeToString([]byte(transcodeScript)), base64.StdEncoding.EncodeToString([]byte(renderScript)), shellQuote(confRenderRepository), shellQuote(confRenderRevision)), nil
+`, base64.StdEncoding.EncodeToString(rcloneConfig), base64.StdEncoding.EncodeToString([]byte(transcodeScript)), base64.StdEncoding.EncodeToString([]byte(renderScript)), shellQuote(confRenderRepository), shellQuote(confRenderRevision), confRenderCompatibilityCommand()), nil
 }
 
 func (h *Handler) gpuWorkerTag() string {

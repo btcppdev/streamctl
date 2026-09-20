@@ -1,6 +1,9 @@
 package handlers
 
-import "strings"
+import (
+	"encoding/base64"
+	"strings"
+)
 
 // Bound provisioning, but keep SSH available for diagnosis if installation fails.
 // Never mark a failed installation ready or automatically create another paid pod.
@@ -23,4 +26,10 @@ func remoteGPUStopCommand(unit string) string {
 		"if [ -d \"$jobdir\" ]; then printf 'failed\\n' > \"$jobdir/active\"; printf 'cancelled\\n' > \"$jobdir/result\"; fi",
 		"fi",
 	}, "\n")
+}
+
+// The pinned renderer emits a trailing empty filter, rejected by Ubuntu 22.04's
+// FFmpeg. Apply a checked patch during setup until the upstream pin includes it.
+func confRenderCompatibilityCommand() string {
+	return "printf '%s' " + shellQuote(base64.StdEncoding.EncodeToString([]byte(confRenderFFmpegCompatibilityPatch))) + " | base64 -d | git -C /root/conf-render apply -"
 }
