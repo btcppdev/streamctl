@@ -139,8 +139,8 @@ local_path() { case "$1" in spaces:test/*) printf '%s/%s' "$REMOTE_ROOT" "${1#sp
 src="$(local_path "$src")"
 dst="$(local_path "$dst")"
 case "$command" in
-  lsjson) printf '{"Size":6,"ModTime":"2026-09-18T00:00:00Z","Hashes":{}}\n' ;;
-  deletefile) if [ -f "$dst" ]; then rm "$dst"; else exit 4; fi ;;
+  lsjson) printf '[{"Path":"source.mp4","Size":6,"ModTime":"2026-09-18T00:00:00Z","Hashes":{}}]\n' ;;
+  delete) while IFS= read -r key; do rm -f "$REMOTE_ROOT/$key"; done < "$4" ;;
   copyto) mkdir -p "$(dirname "$dst")"; cp "$src" "$dst" ;;
   copy) mkdir -p "$dst"; cp -R "$src"/. "$dst" ;;
   *) echo "unsupported fake rclone command: $command" >&2; exit 2 ;;

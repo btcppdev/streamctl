@@ -34,8 +34,8 @@ class InputCacheTests(unittest.TestCase):
         if command == "lsjson":
             key = args[-1].split("bucket/", 1)[1]
             data = self.objects[key]
-            return json.dumps({"Size": len(data), "ModTime": "2026-09-18T00:00:00Z",
-                               "Hashes": {"MD5": hashlib.md5(data).hexdigest()}})
+            return json.dumps([{"Path": Path(key).name, "Size": len(data), "ModTime": "2026-09-18T00:00:00Z",
+                               "Hashes": {"MD5": hashlib.md5(data).hexdigest()}}])
         if command == "lsf":
             parent = args[-1].split("bucket/", 1)[1]
             return "\n".join(key[len(parent):] for key in self.objects if key.startswith(parent))
@@ -140,15 +140,31 @@ class InputCacheTests(unittest.TestCase):
         first, second = self.root / "first", self.root / "second"
         first.mkdir()
         second.mkdir()
-        with patch.object(worker, "run", side_effect=real_run) as calls, patch.dict(os.environ, {"RCLONE_CONFIG": os.devnull, "RCLONE_FILTER_FROM": ""}):
+        with patch.object(worker, "run", side_effect=real_run) as calls, patch.dict(os.environ, {"RCLONE_CONFIG": os.devnull, "RCLONE_FILTER_FROM": os.devnull}):
             for inputs in (first, second):
                 worker.prepare_inputs(str(remote), inputs, [("conf/source.mp4", False)], self.cache, reserve=0)
         self.assertEqual(sum(call.args[1] == "copyto" for call in calls.call_args_list), 1)
         self.assertTrue(os.path.samefile(first / "conf/source.mp4", second / "conf/source.mp4"))
 class PublicationTests(unittest.TestCase):
-    def test_marker_removal_ignores_only_missing_file(self):
-        with patch.object(worker, "run", side_effect=subprocess.CalledProcessError(4, "rclone")):
-            worker.invalidate_ready_marker("spaces:bucket", "conf/recordings/renders/42")
+    @unittest.skipUnless(shutil.which("rclone"), "rclone required for local integration")
+    def test_real_marker_removal_is_exact_and_idempotent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            prefix = "conf/recordings/renders/42"
+            output = root / prefix
+            output.mkdir(parents=True)
+            marker = output / "ready.json"
+            video = output / "talk.mp4"
+            video.write_bytes(b"keep video")
+            with patch.dict(os.environ, {"RCLONE_CONFIG": os.devnull}):
+                worker.invalidate_ready_marker(str(root), prefix)
+                marker.write_text("old marker")
+                worker.invalidate_ready_marker(str(root), prefix)
+                worker.invalidate_ready_marker(str(root), prefix)
+            self.assertFalse(marker.exists())
+            self.assertEqual(video.read_bytes(), b"keep video")
+
+    def test_marker_removal_propagates_errors(self):
         with patch.object(worker, "run", side_effect=subprocess.CalledProcessError(5, "rclone")):
             with self.assertRaises(subprocess.CalledProcessError):
                 worker.invalidate_ready_marker("spaces:bucket", "conf/recordings/renders/42")
@@ -170,8 +186,8 @@ class PublicationTests(unittest.TestCase):
                     if args[1] == "render":
                         self.assertEqual(marker.read_text(), "old ready marker")
                         (output / "intro.mp4").write_bytes(b"rendered")
-                    elif args[1] == "deletefile":
-                        self.assertTrue(args[-1].endswith("/42/ready.json"))
+                    elif args[1] == "delete":
+                        self.assertEqual(Path(args[4]).read_text(), "conf/recordings/renders/42/ready.json\n")
                         marker.unlink()
                         events.append("invalidate")
                     elif args[1] == "copy":

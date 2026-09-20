@@ -21,7 +21,12 @@ def fail(message: str) -> None:
 
 def run(*args: str, capture: bool = False) -> str:
     print("+ " + " ".join(args), file=sys.stderr)
-    result = subprocess.run(args, check=True, text=True, capture_output=capture)
+    try:
+        result = subprocess.run(args, check=True, text=True, capture_output=capture)
+    except subprocess.CalledProcessError as error:
+        if capture and error.stderr:
+            print(error.stderr, file=sys.stderr)
+        raise
     return result.stdout if capture else ""
 
 
@@ -57,7 +62,11 @@ def source_fields(manifest: dict) -> list[tuple[str, bool]]:
 
 
 def object_metadata(remote: str, key: str) -> dict:
-    info = json.loads(run("rclone", "lsjson", "--stat", "--hash", remote_path(remote, key), capture=True))
+    # Ubuntu's worker rclone predates --stat. A file listing returns one entry.
+    entries = json.loads(run("rclone", "lsjson", "--hash", remote_path(remote, key), capture=True))
+    if len(entries) != 1 or entries[0].get("Path") != PurePosixPath(key).name:
+        fail(f"source object not found or ambiguous: {key}")
+    info = entries[0]
     hashes = {name: value for name, value in info.get("Hashes", {}).items() if value}
     modified = info.get("ModTime", "")
     if info.get("IsDir") or info["Size"] < 0 or (not hashes and (not modified or modified.startswith("0001-"))):
@@ -158,11 +167,15 @@ def transcription_enabled(job: dict) -> bool:
 def invalidate_ready_marker(remote: str, output_prefix: str) -> None:
     # The prior successful render remains ready until replacement starts.
     # Once any output can change, consumers must wait for the new final marker.
-    try:
-        run("rclone", "deletefile", "--retries", "1", remote_path(remote, output_prefix + "/ready.json"))
-    except subprocess.CalledProcessError as error:
-        if error.returncode != 4:  # rclone: file not found (first upload).
-            raise
+    key = output_prefix + "/ready.json"
+    if "\n" in key or "\r" in key:
+        fail("invalid ready marker key")
+    # Exact-key deletion is idempotent even on older rclone releases whose
+    # deletefile reports a generic error when the marker does not exist yet.
+    with tempfile.TemporaryDirectory(prefix="streamctl-render-marker-") as directory:
+        selected = Path(directory) / "files.txt"
+        selected.write_text(key + "\n", encoding="utf-8")
+        run("rclone", "delete", remote, "--files-from-raw", str(selected), "--retries", "1")
 
 
 def job_outputs(job: dict) -> dict:
