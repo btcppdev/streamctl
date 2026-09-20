@@ -435,6 +435,13 @@
           touch $out
         '';
 
+        checks.worker-editing-previews = pkgs.runCommand "streamctl-worker-preview-tests" {
+          nativeBuildInputs = [ pkgs.python3 pkgs.rclone pkgs.ffmpeg ];
+        } ''
+          python3 -B -m unittest discover -s ${./streamctl/internal/handlers/worker} -p test_prepare_proxy.py -v
+          touch $out
+        '';
+
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [
             go
