@@ -300,14 +300,16 @@ func runBTCPPBroadcast(args []string) error {
 	fs := flag.NewFlagSet("btcpp-broadcast", flag.ContinueOnError)
 	baseURL, tokenFile := btcppCommandClient(fs)
 	recordingID := fs.String("recording-id", "", "bitcoin++ recording UUID")
+	conference := fs.String("conference", "", "bitcoin++ conference tag for a conference-wide broadcast")
+	title := fs.String("title", "", "title of a conference-wide broadcast")
 	state := fs.String("state", "", "scheduled, live, ended, or failed")
 	hlsURL := fs.String("hls-url", "", "public HLS playlist URL")
 	xBroadcastURL := fs.String("x-broadcast-url", "", "optional X broadcast URL")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if strings.TrimSpace(*recordingID) == "" || strings.TrimSpace(*state) == "" {
-		return fmt.Errorf("recording-id and state are required")
+	if (strings.TrimSpace(*recordingID) == "") == (strings.TrimSpace(*conference) == "") || strings.TrimSpace(*state) == "" {
+		return fmt.Errorf("exactly one of recording-id or conference, and state, are required")
 	}
 	token, err := btcppclient.TokenFromFile(*tokenFile)
 	if err != nil {
@@ -316,9 +318,16 @@ func runBTCPPBroadcast(args []string) error {
 	client := &btcppclient.Client{BaseURL: *baseURL, Token: token}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	broadcast, err := client.PutBroadcast(ctx, *recordingID, btcppclient.BroadcastUpdate{
+	update := btcppclient.BroadcastUpdate{
 		State: *state, HLSURL: *hlsURL, XBroadcastURL: *xBroadcastURL,
-	})
+	}
+	var broadcast *btcppclient.Broadcast
+	if strings.TrimSpace(*conference) != "" {
+		update.Title = strings.TrimSpace(*title)
+		broadcast, err = client.PutConferenceBroadcast(ctx, *conference, update)
+	} else {
+		broadcast, err = client.PutBroadcast(ctx, *recordingID, update)
+	}
 	if err != nil {
 		return err
 	}

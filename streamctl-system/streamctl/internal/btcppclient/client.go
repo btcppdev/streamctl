@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -74,6 +75,7 @@ type RecordingUpdate struct {
 }
 
 type BroadcastUpdate struct {
+	Title         string `json:"title,omitempty"`
 	State         string `json:"state"`
 	HLSURL        string `json:"hls_url,omitempty"`
 	XBroadcastURL string `json:"x_broadcast_url,omitempty"`
@@ -101,7 +103,7 @@ func TokenFromFile(path string) (string, error) {
 	if !info.Mode().IsRegular() {
 		return "", fmt.Errorf("bitcoin++ API token path is not a regular file")
 	}
-	if info.Mode().Perm()&0o077 != 0 {
+	if info.Mode().Perm()&0o077 != 0 && !privateSystemdCredential(path, info.Mode()) {
 		return "", fmt.Errorf("bitcoin++ API token file must not be accessible by group or other users")
 	}
 	contents, err := os.ReadFile(path)
@@ -113,6 +115,21 @@ func TokenFromFile(path string) (string, error) {
 		return "", fmt.Errorf("bitcoin++ API token file is empty")
 	}
 	return token, nil
+}
+
+// systemd may expose credentials as 0440 inside a read-only, private mount.
+// Ordinary token files must still have no group or world permissions.
+func privateSystemdCredential(path string, mode os.FileMode) bool {
+	dir := os.Getenv("CREDENTIALS_DIRECTORY")
+	if dir == "" || !filepath.IsAbs(dir) || mode.Perm() != 0o440 {
+		return false
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil || absolute != filepath.Join(dir, "btcpp-api-token") {
+		return false
+	}
+	info, err := os.Stat(dir)
+	return err == nil && info.IsDir() && info.Mode().Perm()&0o227 == 0
 }
 
 func (client *Client) RecordingCandidates(ctx context.Context, conference string) ([]Candidate, error) {
@@ -143,6 +160,15 @@ func (client *Client) PutRecording(ctx context.Context, conference, talkID strin
 
 func (client *Client) PutBroadcast(ctx context.Context, recordingID string, update BroadcastUpdate) (*Broadcast, error) {
 	path := "/api/v1/recordings/" + url.PathEscape(strings.TrimSpace(recordingID)) + "/broadcast"
+	var response Broadcast
+	if err := client.do(ctx, http.MethodPut, path, update, &response); err != nil {
+		return nil, err
+	}
+	return &response, nil
+}
+
+func (client *Client) PutConferenceBroadcast(ctx context.Context, conference string, update BroadcastUpdate) (*Broadcast, error) {
+	path := "/api/v1/conferences/" + url.PathEscape(strings.TrimSpace(conference)) + "/broadcast"
 	var response Broadcast
 	if err := client.do(ctx, http.MethodPut, path, update, &response); err != nil {
 		return nil, err

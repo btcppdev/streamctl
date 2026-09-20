@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS streams (
 	nostr_title TEXT NOT NULL DEFAULT '',
 	nostr_summary TEXT NOT NULL DEFAULT '',
 	btcpp_recording_id TEXT NOT NULL DEFAULT '',
+	btcpp_conference TEXT NOT NULL DEFAULT '',
 	enabled INTEGER NOT NULL DEFAULT 1,
 	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	FOREIGN KEY (nostr_key_id) REFERENCES nostr_keys(id) ON DELETE SET NULL
@@ -291,15 +292,18 @@ func (db *DB) migrateProductionProxyColumns() error {
 }
 
 func (db *DB) migrateBTCPPRecordingColumn() error {
-	hasColumn, err := db.hasColumn("streams", "btcpp_recording_id")
-	if err != nil {
-		return err
+	for _, column := range []string{"btcpp_recording_id", "btcpp_conference"} {
+		exists, err := db.hasColumn("streams", column)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			if _, err := db.Exec("ALTER TABLE streams ADD COLUMN " + column + " TEXT NOT NULL DEFAULT ''"); err != nil {
+				return err
+			}
+		}
 	}
-	if hasColumn {
-		return nil
-	}
-	_, err = db.Exec(`ALTER TABLE streams ADD COLUMN btcpp_recording_id TEXT NOT NULL DEFAULT ''`)
-	return err
+	return nil
 }
 
 // migrateLegacyVideoFile copies the old streams.video_file column into
@@ -453,6 +457,7 @@ type Stream struct {
 	NostrTitle       string
 	NostrSummary     string
 	BTCPPRecordingID string
+	BTCPPConference  string
 	Enabled          bool
 	CreatedAt        time.Time
 	Endpoints        []Endpoint // populated on read
@@ -591,7 +596,7 @@ func (db *DB) DeleteEndpoint(id int64) error {
 
 func (db *DB) ListStreams() ([]Stream, error) {
 	rows, err := db.Query(
-		`SELECT id, name, schedule_type, on_calendar, nostr_enabled, nostr_key_id, nostr_title, nostr_summary, btcpp_recording_id, enabled, created_at FROM streams ORDER BY created_at DESC`,
+		`SELECT id, name, schedule_type, on_calendar, nostr_enabled, nostr_key_id, nostr_title, nostr_summary, btcpp_recording_id, btcpp_conference, enabled, created_at FROM streams ORDER BY created_at DESC`,
 	)
 	if err != nil {
 		return nil, err
@@ -603,7 +608,7 @@ func (db *DB) ListStreams() ([]Stream, error) {
 		var s Stream
 		var enabled, nostrEnabled int
 		var nostrKeyID sql.NullInt64
-		if err := rows.Scan(&s.ID, &s.Name, &s.ScheduleType, &s.OnCalendar, &nostrEnabled, &nostrKeyID, &s.NostrTitle, &s.NostrSummary, &s.BTCPPRecordingID, &enabled, &s.CreatedAt); err != nil {
+		if err := rows.Scan(&s.ID, &s.Name, &s.ScheduleType, &s.OnCalendar, &nostrEnabled, &nostrKeyID, &s.NostrTitle, &s.NostrSummary, &s.BTCPPRecordingID, &s.BTCPPConference, &enabled, &s.CreatedAt); err != nil {
 			return nil, err
 		}
 		s.Enabled = enabled == 1
@@ -641,8 +646,8 @@ func (db *DB) GetStream(id int64) (*Stream, error) {
 	var enabled, nostrEnabled int
 	var nostrKeyID sql.NullInt64
 	err := db.QueryRow(
-		`SELECT id, name, schedule_type, on_calendar, nostr_enabled, nostr_key_id, nostr_title, nostr_summary, btcpp_recording_id, enabled, created_at FROM streams WHERE id = ?`, id,
-	).Scan(&s.ID, &s.Name, &s.ScheduleType, &s.OnCalendar, &nostrEnabled, &nostrKeyID, &s.NostrTitle, &s.NostrSummary, &s.BTCPPRecordingID, &enabled, &s.CreatedAt)
+		`SELECT id, name, schedule_type, on_calendar, nostr_enabled, nostr_key_id, nostr_title, nostr_summary, btcpp_recording_id, btcpp_conference, enabled, created_at FROM streams WHERE id = ?`, id,
+	).Scan(&s.ID, &s.Name, &s.ScheduleType, &s.OnCalendar, &nostrEnabled, &nostrKeyID, &s.NostrTitle, &s.NostrSummary, &s.BTCPPRecordingID, &s.BTCPPConference, &enabled, &s.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -740,8 +745,8 @@ func (db *DB) CreateStream(s *Stream, endpointIDs []int64, videos []string) (int
 	defer tx.Rollback()
 
 	res, err := tx.Exec(
-		`INSERT INTO streams (name, schedule_type, on_calendar, nostr_enabled, nostr_key_id, nostr_title, nostr_summary, btcpp_recording_id, enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		s.Name, s.ScheduleType, s.OnCalendar, boolInt(s.NostrEnabled), nullInt64(s.NostrKeyID), s.NostrTitle, s.NostrSummary, s.BTCPPRecordingID, boolInt(s.Enabled),
+		`INSERT INTO streams (name, schedule_type, on_calendar, nostr_enabled, nostr_key_id, nostr_title, nostr_summary, btcpp_recording_id, btcpp_conference, enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		s.Name, s.ScheduleType, s.OnCalendar, boolInt(s.NostrEnabled), nullInt64(s.NostrKeyID), s.NostrTitle, s.NostrSummary, s.BTCPPRecordingID, s.BTCPPConference, boolInt(s.Enabled),
 	)
 	if err != nil {
 		return 0, err
@@ -773,8 +778,8 @@ func (db *DB) UpdateStream(s *Stream, endpointIDs []int64, videos []string) erro
 	defer tx.Rollback()
 
 	if _, err := tx.Exec(
-		`UPDATE streams SET name = ?, schedule_type = ?, on_calendar = ?, nostr_enabled = ?, nostr_key_id = ?, nostr_title = ?, nostr_summary = ?, btcpp_recording_id = ?, enabled = ? WHERE id = ?`,
-		s.Name, s.ScheduleType, s.OnCalendar, boolInt(s.NostrEnabled), nullInt64(s.NostrKeyID), s.NostrTitle, s.NostrSummary, s.BTCPPRecordingID, boolInt(s.Enabled), s.ID,
+		`UPDATE streams SET name = ?, schedule_type = ?, on_calendar = ?, nostr_enabled = ?, nostr_key_id = ?, nostr_title = ?, nostr_summary = ?, btcpp_recording_id = ?, btcpp_conference = ?, enabled = ? WHERE id = ?`,
+		s.Name, s.ScheduleType, s.OnCalendar, boolInt(s.NostrEnabled), nullInt64(s.NostrKeyID), s.NostrTitle, s.NostrSummary, s.BTCPPRecordingID, s.BTCPPConference, boolInt(s.Enabled), s.ID,
 	); err != nil {
 		return err
 	}

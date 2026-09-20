@@ -83,3 +83,50 @@ func TestClientUpdatesBroadcastHeartbeat(t *testing.T) {
 		t.Fatalf("broadcast=%+v err=%v", broadcast, err)
 	}
 }
+
+func TestTokenFileAllowsPrivateSystemdCredential(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "btcpp-api-token")
+	if err := os.WriteFile(path, []byte("credential-token"), 0440); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := TokenFromFile(path); err == nil {
+		t.Fatal("accepted group-readable ordinary token")
+	}
+	t.Setenv("CREDENTIALS_DIRECTORY", dir)
+	if err := os.Chmod(dir, 0550); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0700) })
+	if token, err := TokenFromFile(path); err != nil || token != "credential-token" {
+		t.Fatalf("credential: %q, %v", token, err)
+	}
+	if err := os.Chmod(dir, 0555); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := TokenFromFile(path); err == nil {
+		t.Fatal("accepted publicly accessible credential directory")
+	}
+}
+
+func TestClientUpdatesConferenceBroadcast(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "PUT" || r.URL.Path != "/api/v1/conferences/toronto/broadcast" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		var update BroadcastUpdate
+		if err := json.NewDecoder(r.Body).Decode(&update); err != nil {
+			t.Fatal(err)
+		}
+		if update.Title != "Day 3" || update.State != "live" {
+			t.Errorf("unexpected body: %+v", update)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"state": "live", "is_live": true}})
+	}))
+	defer server.Close()
+	client := &Client{BaseURL: server.URL, Token: "test", HTTPClient: server.Client()}
+	result, err := client.PutConferenceBroadcast(context.Background(), "toronto", BroadcastUpdate{Title: "Day 3", State: "live", HLSURL: "https://stream.example/live.m3u8"})
+	if err != nil || !result.IsLive {
+		t.Fatalf("result=%+v error=%v", result, err)
+	}
+}

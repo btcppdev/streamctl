@@ -125,7 +125,7 @@
             btcppAPITokenFile = lib.mkOption {
               type = lib.types.str;
               default = "";
-              description = "Streamctl-owned 0400 bitcoin++ machine token used by production workspaces and broadcast status.";
+              description = "Root-readable 0400 bitcoin++ machine token used by production workspaces and broadcast status. Linked stream units receive a private copy through systemd credentials.";
             };
 
             gpuWorkerHost = lib.mkOption {

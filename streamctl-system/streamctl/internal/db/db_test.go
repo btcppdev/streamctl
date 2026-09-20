@@ -416,3 +416,32 @@ func TestVisibleRenderQueueItemsIncludeFinishedHistory(t *testing.T) {
 		t.Fatalf("visible items should include failures and finished history: %#v", visible)
 	}
 }
+
+func TestStreamConferenceBroadcastTargetPersists(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "streamctl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	s := &Stream{Name: "Day 3", ScheduleType: "once", OnCalendar: "2026-09-20 12:00:00 UTC", BTCPPConference: "toronto", Enabled: true}
+	id, err := database.CreateStream(s, nil, []string{"day3.mp4"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := database.GetStream(id)
+	if err != nil || got.BTCPPConference != "toronto" || got.BTCPPRecordingID != "" {
+		t.Fatalf("stream=%+v err=%v", got, err)
+	}
+	got.BTCPPConference = ""
+	got.BTCPPRecordingID = "recording-1"
+	if err := database.UpdateStream(got, nil, []string{"talk.mp4"}); err != nil {
+		t.Fatal(err)
+	}
+	all, err := database.ListStreams()
+	if err != nil || len(all) != 1 || all[0].BTCPPConference != "" || all[0].BTCPPRecordingID != "recording-1" {
+		t.Fatalf("streams=%+v err=%v", all, err)
+	}
+}

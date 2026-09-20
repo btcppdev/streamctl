@@ -420,8 +420,9 @@ func (m *Manager) renderService(s *db.Stream) string {
 	if strings.TrimSpace(m.NostrKeyDir) != "" {
 		readOnlyPaths += " " + m.NostrKeyDir
 	}
-	if strings.TrimSpace(m.BTCPPTokenFile) != "" {
-		readOnlyPaths += " " + m.BTCPPTokenFile
+	credentials := ""
+	if m.btcppBroadcastConfigured(s) {
+		credentials = "LoadCredential=" + systemdQuote("btcpp-api-token:"+strings.ReplaceAll(m.BTCPPTokenFile, "%", "%%")) + "\n"
 	}
 	return fmt.Sprintf(`[Unit]
 Description=streamctl: %s
@@ -432,7 +433,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=%s
-IPAccounting=true
+%sIPAccounting=true
 ExecStartPre=%s
 ExecStart=%s
 Restart=no
@@ -454,6 +455,7 @@ ReadWritePaths=%s
 		afterPrefetch,
 		requiresPrefetch,
 		m.RunUser,
+		credentials,
 		systemdQuote(m.probeScriptPath(s.ID)),
 		systemdQuote(m.runScriptPath(s.ID)),
 		readOnlyPaths,
@@ -782,7 +784,7 @@ func (m *Manager) renderRunScript(s *db.Stream) string {
 }
 
 func (m *Manager) btcppBroadcastConfigured(s *db.Stream) bool {
-	return s != nil && strings.TrimSpace(s.BTCPPRecordingID) != "" &&
+	return s != nil && (strings.TrimSpace(s.BTCPPRecordingID) != "" || strings.TrimSpace(s.BTCPPConference) != "") &&
 		strings.TrimSpace(m.BTCPPAPIBase) != "" && strings.TrimSpace(m.BTCPPTokenFile) != "" &&
 		strings.TrimSpace(m.PublicBaseURL) != ""
 }
@@ -796,10 +798,14 @@ func (m *Manager) renderBTCPPBroadcastCommand(s *db.Stream, state string) string
 		bin = "/run/current-system/sw/bin/cmd"
 	}
 	hlsURL := strings.TrimRight(m.PublicBaseURL, "/") + fmt.Sprintf("/live/stream-%d/index.m3u8", s.ID)
+	target := " -recording-id " + shellQuote(s.BTCPPRecordingID)
+	if s.BTCPPConference != "" {
+		target = " -conference " + shellQuote(s.BTCPPConference) + " -title " + shellQuote(s.Name)
+	}
 	return shellQuote(bin) + " btcpp-broadcast" +
 		" -api-base " + shellQuote(m.BTCPPAPIBase) +
-		" -token-file " + shellQuote(m.BTCPPTokenFile) +
-		" -recording-id " + shellQuote(s.BTCPPRecordingID) +
+		` -token-file "${CREDENTIALS_DIRECTORY}/btcpp-api-token"` +
+		target +
 		" -state " + shellQuote(state) +
 		" -hls-url " + shellQuote(hlsURL) + " || true\n"
 }
