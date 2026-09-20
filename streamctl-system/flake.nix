@@ -95,7 +95,7 @@
             btcppOAuthBaseURL = lib.mkOption {
               type = lib.types.str;
               default = "https://btcpp.dev";
-              description = "Bitcoin++ OAuth authorization server base URL.";
+              description = "bitcoin++ OAuth authorization server base URL.";
             };
 
             btcppOAuthClientID = lib.mkOption {
@@ -107,7 +107,7 @@
             btcppOAuthClientSecretFile = lib.mkOption {
               type = lib.types.str;
               default = "";
-              description = "Root-readable 0400 file containing the Bitcoin++ OAuth client secret.";
+              description = "Root-readable 0400 file containing the bitcoin++ OAuth client secret.";
             };
 
             btcppOAuthRedirectURL = lib.mkOption {
@@ -119,13 +119,13 @@
             btcppAPIBaseURL = lib.mkOption {
               type = lib.types.str;
               default = "https://btcpp.dev";
-              description = "Bitcoin++ API base URL used by production workspaces and for public broadcast status.";
+              description = "bitcoin++ API base URL used by production workspaces and for public broadcast status.";
             };
 
             btcppAPITokenFile = lib.mkOption {
               type = lib.types.str;
               default = "";
-              description = "Streamctl-owned 0400 Bitcoin++ machine token used by production workspaces and broadcast status.";
+              description = "Streamctl-owned 0400 bitcoin++ machine token used by production workspaces and broadcast status.";
             };
 
             gpuWorkerHost = lib.mkOption {

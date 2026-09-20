@@ -62,12 +62,12 @@ func main() {
 		audioBitrate        = flag.String("normalize-audio-bitrate", "160k", "audio bitrate for normalized prefetched clips")
 		nostrKeyDir         = flag.String("nostr-key-dir", "/var/lib/streamctl/nostr-keys", "directory for stored Nostr private keys")
 		publicBaseURL       = flag.String("public-base-url", "", "public base URL used in Nostr live events, e.g. https://stream.example.com")
-		btcppOAuthBase      = flag.String("btcpp-oauth-base", "https://btcpp.dev", "Bitcoin++ OAuth server base URL")
-		btcppOAuthClientID  = flag.String("btcpp-oauth-client-id", "", "registered Bitcoin++ OAuth client ID")
-		btcppOAuthSecret    = flag.String("btcpp-oauth-client-secret-file", "", "path to a private Bitcoin++ OAuth client secret file")
+		btcppOAuthBase      = flag.String("btcpp-oauth-base", "https://btcpp.dev", "bitcoin++ OAuth server base URL")
+		btcppOAuthClientID  = flag.String("btcpp-oauth-client-id", "", "registered bitcoin++ OAuth client ID")
+		btcppOAuthSecret    = flag.String("btcpp-oauth-client-secret-file", "", "path to a private bitcoin++ OAuth client secret file")
 		btcppOAuthRedirect  = flag.String("btcpp-oauth-redirect-url", "", "OAuth callback URL; defaults to <public-base-url>/oauth/callback")
-		btcppAPIBase        = flag.String("btcpp-api-base", "https://btcpp.dev", "Bitcoin++ API base URL used by production workspaces and broadcast status")
-		btcppAPITokenFile   = flag.String("btcpp-api-token-file", "", "path to the Bitcoin++ machine API token")
+		btcppAPIBase        = flag.String("btcpp-api-base", "https://btcpp.dev", "bitcoin++ API base URL used by production workspaces and broadcast status")
+		btcppAPITokenFile   = flag.String("btcpp-api-token-file", "", "path to the bitcoin++ machine API token")
 		gpuWorkerHost       = flag.String("gpu-worker-host", "", "SSH target for GPU transcode worker, e.g. ubuntu@1.2.3.4")
 		gpuWorkerSSHKey     = flag.String("gpu-worker-ssh-key", "", "managed worker SSH key path; defaults to the production data directory")
 		gpuWorkerCommand    = flag.String("gpu-worker-command", "/root/transcode-nvenc.sh", "command path on GPU worker used to process one Spaces path")
@@ -111,17 +111,17 @@ func main() {
 			ClientSecret: clientSecret, RedirectURL: redirectURL,
 		}
 		if err := oauthClient.Validate(); err != nil {
-			log.Fatalf("configure Bitcoin++ OAuth: %v", err)
+			log.Fatalf("configure bitcoin++ OAuth: %v", err)
 		}
 	}
 	if secret == "" && oauthClient == nil {
-		log.Fatal("configure Bitcoin++ OAuth or set STREAMCTL_SECRET for break-glass access")
+		log.Fatal("configure bitcoin++ OAuth or set STREAMCTL_SECRET for break-glass access")
 	}
 	var btcppAPIClient *btcppclient.Client
 	if strings.TrimSpace(*btcppAPITokenFile) != "" {
 		token, err := btcppclient.TokenFromFile(*btcppAPITokenFile)
 		if err != nil {
-			log.Fatalf("configure Bitcoin++ production API: %v", err)
+			log.Fatalf("configure bitcoin++ production API: %v", err)
 		}
 		btcppAPIClient = &btcppclient.Client{BaseURL: *btcppAPIBase, Token: token}
 	}
@@ -221,15 +221,15 @@ func main() {
 }
 
 func btcppCommandClient(fs *flag.FlagSet) (*string, *string) {
-	baseURL := fs.String("api-base", "https://btcpp.dev", "Bitcoin++ website base URL")
-	tokenFile := fs.String("token-file", "/var/lib/streamctl/btcpp-api-token", "path to a 0400 Bitcoin++ API token file")
+	baseURL := fs.String("api-base", "https://btcpp.dev", "bitcoin++ website base URL")
+	tokenFile := fs.String("token-file", "/var/lib/streamctl/btcpp-api-token", "path to a 0400 bitcoin++ API token file")
 	return baseURL, tokenFile
 }
 
 func runBTCPPCandidates(args []string) error {
 	fs := flag.NewFlagSet("btcpp-candidates", flag.ContinueOnError)
 	baseURL, tokenFile := btcppCommandClient(fs)
-	conference := fs.String("conference", "", "Bitcoin++ conference tag")
+	conference := fs.String("conference", "", "bitcoin++ conference tag")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -253,8 +253,8 @@ func runBTCPPCandidates(args []string) error {
 func runBTCPPRecording(args []string) error {
 	fs := flag.NewFlagSet("btcpp-recording", flag.ContinueOnError)
 	baseURL, tokenFile := btcppCommandClient(fs)
-	conference := fs.String("conference", "", "Bitcoin++ conference tag")
-	talkID := fs.String("talk-id", "", "Bitcoin++ conference talk UUID")
+	conference := fs.String("conference", "", "bitcoin++ conference tag")
+	talkID := fs.String("talk-id", "", "bitcoin++ conference talk UUID")
 	fileURI := fs.String("file-uri", "", "DigitalOcean Spaces object key")
 	youtubeURL := fs.String("youtube-url", "", "published YouTube URL")
 	xURL := fs.String("x-url", "", "published X post URL")
@@ -299,7 +299,7 @@ func runBTCPPRecording(args []string) error {
 func runBTCPPBroadcast(args []string) error {
 	fs := flag.NewFlagSet("btcpp-broadcast", flag.ContinueOnError)
 	baseURL, tokenFile := btcppCommandClient(fs)
-	recordingID := fs.String("recording-id", "", "Bitcoin++ recording UUID")
+	recordingID := fs.String("recording-id", "", "bitcoin++ recording UUID")
 	state := fs.String("state", "", "scheduled, live, ended, or failed")
 	hlsURL := fs.String("hls-url", "", "public HLS playlist URL")
 	xBroadcastURL := fs.String("x-broadcast-url", "", "optional X broadcast URL")

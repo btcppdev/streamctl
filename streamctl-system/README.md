@@ -68,7 +68,7 @@ streamctl-system/
 ## What it does, end-to-end
 
 1. You scp a video file into the droplet
-2. A Bitcoin++ global administrator opens the web UI and signs in through btcpp.dev OAuth
+2. A bitcoin++ global administrator opens the web UI and signs in through btcpp.dev OAuth
 3. You configure RTMP endpoints (YouTube, X) once with stream keys
 4. You schedule a stream: pick a video, pick endpoints, set a time (one-shot or recurring)
 5. systemd fires at the scheduled time; ffmpeg pushes the video to all selected endpoints simultaneously via the `tee` muxer (no re-encoding, just `-c copy`)
@@ -139,7 +139,7 @@ The existing shared secret is retained only for emergency break-glass access:
 make bootstrap-secret
 ```
 
-Prints a random 32-character emergency secret. Store it securely; routine access should use Bitcoin++ OAuth.
+Prints a random 32-character emergency secret. Store it securely; routine access should use bitcoin++ OAuth.
 
 ### 6. First deploy
 

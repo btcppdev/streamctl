@@ -292,13 +292,13 @@ func (h *Handler) productionCut(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) productionConferences(ctx context.Context) ([]productionConferenceView, string) {
 	if h.BTCPP == nil {
-		return nil, "Bitcoin++ production API is not configured; set -btcpp-api-token-file."
+		return nil, "bitcoin++ production API is not configured; set -btcpp-api-token-file."
 	}
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	conferences, err := h.BTCPP.Conferences(ctx)
 	if err != nil {
-		return nil, "Loading Bitcoin++ conferences failed: " + err.Error()
+		return nil, "Loading bitcoin++ conferences failed: " + err.Error()
 	}
 	sort.SliceStable(conferences, func(i, j int) bool { return conferenceSortKey(conferences[i]) > conferenceSortKey(conferences[j]) })
 	views := make([]productionConferenceView, 0, len(conferences))
@@ -325,13 +325,13 @@ func conferenceSortKey(conference btcppclient.Conference) string {
 
 func (h *Handler) productionTalks(ctx context.Context, conference string) ([]productionTalkView, error) {
 	if h.BTCPP == nil {
-		return nil, fmt.Errorf("Bitcoin++ production API is not configured; set -btcpp-api-token-file")
+		return nil, fmt.Errorf("bitcoin++ production API is not configured; set -btcpp-api-token-file")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	candidates, err := h.BTCPP.RecordingCandidates(ctx, conference)
 	if err != nil {
-		return nil, fmt.Errorf("loading Bitcoin++ talks failed: %w", err)
+		return nil, fmt.Errorf("loading bitcoin++ talks failed: %w", err)
 	}
 	sort.SliceStable(candidates, func(i, j int) bool {
 		leftDay, rightDay := candidateDayKey(candidates[i]), candidateDayKey(candidates[j])

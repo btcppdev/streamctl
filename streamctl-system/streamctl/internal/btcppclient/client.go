@@ -92,25 +92,25 @@ type Broadcast struct {
 func TokenFromFile(path string) (string, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
-		return "", fmt.Errorf("Bitcoin++ API token file is required")
+		return "", fmt.Errorf("bitcoin++ API token file is required")
 	}
 	info, err := os.Stat(path)
 	if err != nil {
-		return "", fmt.Errorf("stat Bitcoin++ API token file: %w", err)
+		return "", fmt.Errorf("stat bitcoin++ API token file: %w", err)
 	}
 	if !info.Mode().IsRegular() {
-		return "", fmt.Errorf("Bitcoin++ API token path is not a regular file")
+		return "", fmt.Errorf("bitcoin++ API token path is not a regular file")
 	}
 	if info.Mode().Perm()&0o077 != 0 {
-		return "", fmt.Errorf("Bitcoin++ API token file must not be accessible by group or other users")
+		return "", fmt.Errorf("bitcoin++ API token file must not be accessible by group or other users")
 	}
 	contents, err := os.ReadFile(path)
 	if err != nil {
-		return "", fmt.Errorf("read Bitcoin++ API token file: %w", err)
+		return "", fmt.Errorf("read bitcoin++ API token file: %w", err)
 	}
 	token := strings.TrimSpace(string(contents))
 	if token == "" {
-		return "", fmt.Errorf("Bitcoin++ API token file is empty")
+		return "", fmt.Errorf("bitcoin++ API token file is empty")
 	}
 	return token, nil
 }
@@ -153,23 +153,23 @@ func (client *Client) PutBroadcast(ctx context.Context, recordingID string, upda
 func (client *Client) do(ctx context.Context, method, path string, requestBody, responseBody any) error {
 	base, err := url.Parse(strings.TrimRight(strings.TrimSpace(client.BaseURL), "/"))
 	if err != nil || (base.Scheme != "https" && base.Scheme != "http") || base.Host == "" {
-		return fmt.Errorf("invalid Bitcoin++ API base URL")
+		return fmt.Errorf("invalid bitcoin++ API base URL")
 	}
 	if strings.TrimSpace(client.Token) == "" {
-		return fmt.Errorf("Bitcoin++ API token is required")
+		return fmt.Errorf("bitcoin++ API token is required")
 	}
 	base.Path = strings.TrimRight(base.Path, "/") + path
 	var body io.Reader
 	if requestBody != nil {
 		encoded, err := json.Marshal(requestBody)
 		if err != nil {
-			return fmt.Errorf("encode Bitcoin++ API request: %w", err)
+			return fmt.Errorf("encode bitcoin++ API request: %w", err)
 		}
 		body = bytes.NewReader(encoded)
 	}
 	request, err := http.NewRequestWithContext(ctx, method, base.String(), body)
 	if err != nil {
-		return fmt.Errorf("create Bitcoin++ API request: %w", err)
+		return fmt.Errorf("create bitcoin++ API request: %w", err)
 	}
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("Authorization", "Bearer "+client.Token)
@@ -182,7 +182,7 @@ func (client *Client) do(ctx context.Context, method, path string, requestBody, 
 	}
 	response, err := httpClient.Do(request)
 	if err != nil {
-		return fmt.Errorf("Bitcoin++ API request: %w", err)
+		return fmt.Errorf("bitcoin++ API request: %w", err)
 	}
 	defer response.Body.Close()
 	limited := io.LimitReader(response.Body, maximumResponseBytes)
@@ -192,21 +192,21 @@ func (client *Client) do(ctx context.Context, method, path string, requestBody, 
 		}
 		_ = json.NewDecoder(limited).Decode(&apiError)
 		if apiError.Error.Message != "" {
-			return fmt.Errorf("Bitcoin++ API %s: %s (request %s)", apiError.Error.Code, apiError.Error.Message, apiError.Error.RequestID)
+			return fmt.Errorf("bitcoin++ API %s: %s (request %s)", apiError.Error.Code, apiError.Error.Message, apiError.Error.RequestID)
 		}
-		return fmt.Errorf("Bitcoin++ API returned HTTP %d", response.StatusCode)
+		return fmt.Errorf("bitcoin++ API returned HTTP %d", response.StatusCode)
 	}
 	var envelope struct {
 		Data json.RawMessage `json:"data"`
 	}
 	if err := json.NewDecoder(limited).Decode(&envelope); err != nil {
-		return fmt.Errorf("decode Bitcoin++ API envelope: %w", err)
+		return fmt.Errorf("decode bitcoin++ API envelope: %w", err)
 	}
 	if len(envelope.Data) == 0 {
-		return fmt.Errorf("Bitcoin++ API response omitted data")
+		return fmt.Errorf("bitcoin++ API response omitted data")
 	}
 	if err := json.Unmarshal(envelope.Data, responseBody); err != nil {
-		return fmt.Errorf("decode Bitcoin++ API data: %w", err)
+		return fmt.Errorf("decode bitcoin++ API data: %w", err)
 	}
 	return nil
 }
