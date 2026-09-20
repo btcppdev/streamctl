@@ -21,7 +21,21 @@ The root `.private/` directory is ignored by the public repository. It can hold
 a separate Git checkout; back it up or connect it to a private remote. A fresh
 public clone does not include these local settings. Restore them before
 deploying a host that has private additions, otherwise activation would remove
-those additions. Update the pinned public input when rolling out app changes.
+those additions.
+
+To deploy the current public checkout while retaining private additions, use
+this override (assuming the private flake names its public input `streamctl`):
+
+```make
+DEPLOY_FLAKE_ARGS := --override-input streamctl "git+file://$(abspath ..)?dir=streamctl-system" --no-write-lock-file
+```
+
+All three deployment targets pass these arguments to Nix. The Git input includes
+tracked local changes, just like deploying the public flake directly; add new
+files to Git before deploying. Ignored private files are excluded. There is no
+need to push commits or update the private application's revision for each
+deployment. `--no-write-lock-file` leaves the private lockfile intact; its pinned
+revision remains the fallback for deployments without this override.
 
 Keep private infrastructure resources in their own Terraform project and state.
 When separating existing resources, back up state and use `terraform state mv`
