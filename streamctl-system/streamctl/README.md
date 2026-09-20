@@ -166,9 +166,13 @@ same saved job, including after a restart. Pending, failed, or cancelled plans
 disable matching future jobs. Plans with start times at or before the poll
 time are skipped to avoid replaying old broadcasts or disturbing playback.
 API failures or plans missing from a response do not delete existing jobs.
-Import errors are logged to the streamctl service journal. Allow enough lead
-time before the broadcast for polling and the existing prefetch/normalization
-workflow to finish.
+Import errors are logged to the streamctl service journal. Imported jobs skip
+normalization even when `-normalize-prefetch` is enabled: prefetch downloads
+and probes the provided Spaces file, and playback streams that original file
+with FFmpeg stream copy. No normalized object or readiness marker is required.
+The render must already have codecs compatible with the destination. Other
+jobs keep the configured normalization behavior. Allow enough lead time before
+the broadcast for polling and downloading the video.
 
 Set `services.streamctl.btcppAPITokenFile` to that path to enable the
 **Production → Timestamp** workspace. The workspace reads eligible talks from

@@ -57,6 +57,9 @@ func TestImportRescheduleAndRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := scheduler.last
+	if !first.AutoScheduled {
+		t.Fatal("imported job lost its automatic scheduling marker")
+	}
 	if scheduler.calls != 1 || first.ScheduleType != "once" || first.OnCalendar != "2026-09-20 13:00:00 UTC" || first.BTCPPRecordingID != "recording-1" || len(first.Videos) != 1 || first.Videos[0] != client.plans[0].Source.ObjectKey || len(first.Endpoints) != 1 || first.Endpoints[0].ID != s.XEndpointID || !first.Enabled {
 		t.Fatalf("import: %+v", first)
 	}
@@ -79,6 +82,9 @@ func TestImportRescheduleAndRestart(t *testing.T) {
 	streams, err := s.DB.ListStreams()
 	if err != nil || len(streams) != 1 {
 		t.Fatalf("jobs=%v err=%v", streams, err)
+	}
+	if !streams[0].AutoScheduled {
+		t.Fatal("listed job lost automatic scheduling marker")
 	}
 }
 

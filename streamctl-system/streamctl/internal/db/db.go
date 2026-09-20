@@ -465,6 +465,7 @@ type Stream struct {
 	NostrTitle       string
 	NostrSummary     string
 	BTCPPRecordingID string
+	AutoScheduled    bool // derived from the durable broadcast-plan link on read
 	BTCPPConference  string
 	Enabled          bool
 	CreatedAt        time.Time
@@ -604,7 +605,7 @@ func (db *DB) DeleteEndpoint(id int64) error {
 
 func (db *DB) ListStreams() ([]Stream, error) {
 	rows, err := db.Query(
-		`SELECT id, name, schedule_type, on_calendar, nostr_enabled, nostr_key_id, nostr_title, nostr_summary, btcpp_recording_id, btcpp_conference, enabled, created_at FROM streams ORDER BY created_at DESC`,
+		`SELECT id, name, schedule_type, on_calendar, nostr_enabled, nostr_key_id, nostr_title, nostr_summary, btcpp_recording_id, btcpp_conference, enabled, created_at, EXISTS (SELECT 1 FROM broadcast_plan_sync p WHERE p.stream_id = streams.id AND p.recording_id = streams.btcpp_recording_id) FROM streams ORDER BY created_at DESC`,
 	)
 	if err != nil {
 		return nil, err
@@ -616,7 +617,7 @@ func (db *DB) ListStreams() ([]Stream, error) {
 		var s Stream
 		var enabled, nostrEnabled int
 		var nostrKeyID sql.NullInt64
-		if err := rows.Scan(&s.ID, &s.Name, &s.ScheduleType, &s.OnCalendar, &nostrEnabled, &nostrKeyID, &s.NostrTitle, &s.NostrSummary, &s.BTCPPRecordingID, &s.BTCPPConference, &enabled, &s.CreatedAt); err != nil {
+		if err := rows.Scan(&s.ID, &s.Name, &s.ScheduleType, &s.OnCalendar, &nostrEnabled, &nostrKeyID, &s.NostrTitle, &s.NostrSummary, &s.BTCPPRecordingID, &s.BTCPPConference, &enabled, &s.CreatedAt, &s.AutoScheduled); err != nil {
 			return nil, err
 		}
 		s.Enabled = enabled == 1
@@ -654,8 +655,8 @@ func (db *DB) GetStream(id int64) (*Stream, error) {
 	var enabled, nostrEnabled int
 	var nostrKeyID sql.NullInt64
 	err := db.QueryRow(
-		`SELECT id, name, schedule_type, on_calendar, nostr_enabled, nostr_key_id, nostr_title, nostr_summary, btcpp_recording_id, btcpp_conference, enabled, created_at FROM streams WHERE id = ?`, id,
-	).Scan(&s.ID, &s.Name, &s.ScheduleType, &s.OnCalendar, &nostrEnabled, &nostrKeyID, &s.NostrTitle, &s.NostrSummary, &s.BTCPPRecordingID, &s.BTCPPConference, &enabled, &s.CreatedAt)
+		`SELECT id, name, schedule_type, on_calendar, nostr_enabled, nostr_key_id, nostr_title, nostr_summary, btcpp_recording_id, btcpp_conference, enabled, created_at, EXISTS (SELECT 1 FROM broadcast_plan_sync p WHERE p.stream_id = streams.id AND p.recording_id = streams.btcpp_recording_id) FROM streams WHERE id = ?`, id,
+	).Scan(&s.ID, &s.Name, &s.ScheduleType, &s.OnCalendar, &nostrEnabled, &nostrKeyID, &s.NostrTitle, &s.NostrSummary, &s.BTCPPRecordingID, &s.BTCPPConference, &enabled, &s.CreatedAt, &s.AutoScheduled)
 	if err != nil {
 		return nil, err
 	}

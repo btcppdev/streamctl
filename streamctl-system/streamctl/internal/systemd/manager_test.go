@@ -21,10 +21,10 @@ func TestNormalizedRemoteAndCachePaths(t *testing.T) {
 	if got, want := m.normalizedRemoteClipPath(source), "vienna/recordings/normalized/stage-two/talk.mp4"; got != want {
 		t.Fatalf("normalized remote path = %q, want %q", got, want)
 	}
-	if got, want := m.localClipPath(source), "/var/lib/streamctl/cache/normalized/vienna/recordings/edits/stage-two/talk.mp4"; got != want {
+	if got, want := m.localClipPath(&db.Stream{}, source), "/var/lib/streamctl/cache/normalized/vienna/recordings/edits/stage-two/talk.mp4"; got != want {
 		t.Fatalf("local normalized cache path = %q, want %q", got, want)
 	}
-	paths := m.remoteCachePaths(source)
+	paths := m.remoteCachePaths(&db.Stream{}, source)
 	if len(paths) != 2 {
 		t.Fatalf("expected raw and normalized cleanup paths, got %#v", paths)
 	}
@@ -59,6 +59,35 @@ func TestPrefetchScriptPrefersPreprocessedNormalizedObject(t *testing.T) {
 		if !strings.Contains(script, want) {
 			t.Fatalf("prefetch script missing %q\n%s", want, script)
 		}
+	}
+}
+
+func TestAutoScheduledRenderSkipsNormalization(t *testing.T) {
+	m := &Manager{CacheDir: "/cache", Remote: "spaces:btcpp", Normalize: true, CleanupCache: true}
+	s := &db.Stream{ID: 42, AutoScheduled: true, Videos: []string{"dev26/recordings/renders/talk.mp4"}}
+	prefetch := m.renderPrefetchScript(s)
+	for _, want := range []string{"rclone copyto 'spaces:btcpp/dev26/recordings/renders/talk.mp4' '/cache/dev26/recordings/renders/talk.mp4'", "ffprobe -v error -show_streams '/cache/dev26/recordings/renders/talk.mp4'"} {
+		if !strings.Contains(prefetch, want) {
+			t.Fatalf("prefetch missing %q:\n%s", want, prefetch)
+		}
+	}
+	for _, forbidden := range []string{"ffmpeg", ".ready.json", "/normalized/", "should_use_raw_fallback"} {
+		if strings.Contains(prefetch, forbidden) {
+			t.Fatalf("auto-scheduled prefetch contains %q", forbidden)
+		}
+	}
+	for name, script := range map[string]string{"playlist": m.renderPlaylist(s), "probe": m.renderProbeScript(s), "cleanup": m.renderCleanupScript(s)} {
+		if !strings.Contains(script, "/cache/dev26/recordings/renders/talk.mp4") || strings.Contains(script, "/normalized/") {
+			t.Fatalf("%s uses wrong file:\n%s", name, script)
+		}
+	}
+	if !strings.Contains(m.renderRunScript(s), " -c copy ") {
+		t.Fatal("playback no longer uses stream copy")
+	}
+	// The shared manager must still normalize ordinary jobs.
+	s.AutoScheduled = false
+	if !strings.Contains(m.renderPrefetchScript(s), "ffmpeg") || !strings.Contains(m.renderPlaylist(s), "/normalized/") {
+		t.Fatal("ordinary jobs stopped normalizing")
 	}
 }
 

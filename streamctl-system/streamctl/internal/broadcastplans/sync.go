@@ -74,7 +74,7 @@ func (s *Syncer) apply(plan btcppclient.RecordingBroadcastPlan, now time.Time) e
 		return nil
 	}
 	stream := &db.Stream{
-		Name: plan.Title, BTCPPRecordingID: plan.RecordingID,
+		Name: plan.Title, BTCPPRecordingID: plan.RecordingID, AutoScheduled: true,
 		ScheduleType: "once", OnCalendar: plan.ScheduledAt.UTC().Format("2006-01-02 15:04:05 UTC"),
 		Enabled: plan.Status == "scheduled",
 	}

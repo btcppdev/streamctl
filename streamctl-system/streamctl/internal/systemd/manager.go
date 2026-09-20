@@ -322,7 +322,7 @@ func (m *Manager) RemoveCachedClips(s *db.Stream) error {
 		if !isRemoteClip(v) {
 			continue
 		}
-		for _, path := range m.remoteCachePaths(v) {
+		for _, path := range m.remoteCachePaths(s, v) {
 			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 				errs = append(errs, fmt.Sprintf("%s: %v", path, err))
 			}
@@ -498,7 +498,7 @@ StandardError=journal
 func (m *Manager) renderPlaylist(s *db.Stream) string {
 	var b strings.Builder
 	for _, v := range s.Videos {
-		full := m.localClipPath(v)
+		full := m.localClipPath(s, v)
 		b.WriteString("file ")
 		b.WriteString(shellQuote(full))
 		b.WriteString("\n")
@@ -549,7 +549,7 @@ func (m *Manager) renderPrefetchScript(s *db.Stream) string {
 		b.WriteString(m.renderNotifyFunction(s))
 		b.WriteString("trap 'rc=$?; notify failure; exit $rc' ERR\n")
 	}
-	if m.Normalize {
+	if m.normalizeStream(s) {
 		b.WriteString(m.renderPrefetchFallbackFunctions(s))
 	}
 	for _, v := range s.Videos {
@@ -557,16 +557,16 @@ func (m *Manager) renderPrefetchScript(s *db.Stream) string {
 			continue
 		}
 		raw := m.rawRemoteClipPath(v)
-		local := m.localClipPath(v)
+		local := m.localClipPath(s, v)
 		remote := m.remoteObjectPath(v)
 		b.WriteString("/run/current-system/sw/bin/mkdir -p ")
 		b.WriteString(shellQuote(filepath.Dir(raw)))
-		if m.Normalize {
+		if m.normalizeStream(s) {
 			b.WriteString(" ")
 			b.WriteString(shellQuote(filepath.Dir(local)))
 		}
 		b.WriteString("\n")
-		if m.Normalize {
+		if m.normalizeStream(s) {
 			b.WriteString("if [ -f ")
 			b.WriteString(shellQuote(local))
 			b.WriteString(" ] && /run/current-system/sw/bin/ffprobe -v error -show_streams ")
@@ -622,7 +622,7 @@ func (m *Manager) renderPrefetchScript(s *db.Stream) string {
 		b.WriteString(shellQuote(raw))
 		b.WriteString("\n")
 		b.WriteString("fi\n")
-		if m.Normalize {
+		if m.normalizeStream(s) {
 			b.WriteString(m.renderNormalizeCommand(raw, local, remote))
 			b.WriteString("fi\n")
 			b.WriteString("fi\n")
@@ -919,7 +919,7 @@ func (m *Manager) renderProbeScript(s *db.Stream) string {
 func (m *Manager) renderProbeScriptBody(s *db.Stream) string {
 	var b strings.Builder
 	for _, v := range s.Videos {
-		local := m.localClipPath(v)
+		local := m.localClipPath(s, v)
 		b.WriteString("/run/current-system/sw/bin/ffprobe -v error -show_streams ")
 		b.WriteString(shellQuote(local))
 		b.WriteString(" >/dev/null\n")
@@ -949,7 +949,7 @@ func (m *Manager) renderCleanupScriptBody(s *db.Stream) string {
 		if !isRemoteClip(v) {
 			continue
 		}
-		for _, path := range m.remoteCachePaths(v) {
+		for _, path := range m.remoteCachePaths(s, v) {
 			b.WriteString("/run/current-system/sw/bin/rm -f -- ")
 			b.WriteString(shellQuote(path))
 			b.WriteString("\n")
@@ -967,9 +967,14 @@ func (m *Manager) needsPrefetch(s *db.Stream) bool {
 	return false
 }
 
-func (m *Manager) localClipPath(source string) string {
+// Imported talks are finished renders; prefetch and stream their original bytes.
+func (m *Manager) normalizeStream(s *db.Stream) bool {
+	return m.Normalize && !s.AutoScheduled
+}
+
+func (m *Manager) localClipPath(s *db.Stream, source string) string {
 	if isRemoteClip(source) {
-		if m.Normalize {
+		if m.normalizeStream(s) {
 			return m.normalizedClipPath(source)
 		}
 		return filepath.Join(m.CacheDir, source)
@@ -995,9 +1000,9 @@ func (m *Manager) remoteObjectPath(source string) string {
 	return strings.TrimRight(m.Remote, "/") + slashForRemote(m.Remote) + source
 }
 
-func (m *Manager) remoteCachePaths(source string) []string {
+func (m *Manager) remoteCachePaths(s *db.Stream, source string) []string {
 	paths := []string{m.rawRemoteClipPath(source)}
-	if m.Normalize {
+	if m.normalizeStream(s) {
 		paths = append(paths, m.normalizedClipPath(source))
 	}
 	return paths
