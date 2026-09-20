@@ -11,12 +11,38 @@
 		<input type="text" name="name" value="{{if .Stream}}{{.Stream.Name}}{{end}}" required>
 	</div>
 
-	<div class="field">
-		<label>bitcoin++ recording ID</label>
-		<input type="text" name="btcpp_recording_id" value="{{if .Stream}}{{.Stream.BTCPPRecordingID}}{{end}}" placeholder="00000000-0000-4000-8000-000000000000">
-		<div class="hint">Links this stream to its permanent <code>btcpp.dev/watch/{recording-id}</code> page. When configured, streamctl reports live heartbeats and the final stop automatically.</div>
-	</div>
-
+	<fieldset id="broadcast-picker">
+        <legend>bitcoin++ live page</legend>
+        <input type="hidden" name="btcpp_recording_id" id="broadcast-recording" value="{{if .Stream}}{{.Stream.BTCPPRecordingID}}{{end}}">
+        <input type="hidden" name="btcpp_conference" id="broadcast-conference" value="{{if .Stream}}{{.Stream.BTCPPConference}}{{end}}">
+        <div class="field">
+            <label for="broadcast-mode">Link stream to</label>
+            <select id="broadcast-mode" name="btcpp_target_mode">
+                <option value="auto">Automatically match the video to a talk</option>
+                <option value="talk">Individual talk</option>
+                <option value="conference">Entire conference</option>
+                <option value="none">No bitcoin++ live page</option>
+            </select>
+        </div>
+        <div id="broadcast-choices" hidden>
+            <div class="field">
+                <label for="conference-search">Search conferences</label>
+                <input type="search" id="conference-search" placeholder="Tag, name, or location" disabled>
+                <label for="conference-choice">Conference (newest first)</label>
+                <select id="conference-choice" disabled></select>
+            </div>
+            <div id="talk-choices" class="field" hidden>
+                <label for="talk-search">Search talks</label>
+                <input type="search" id="talk-search" placeholder="Talk title or speaker" disabled>
+                <label for="talk-choice">Talk</label>
+                <select id="talk-choice" disabled></select>
+                <div class="hint">Talks need an attached recording before they can be selected.</div>
+            </div>
+        </div>
+        <p id="broadcast-status" class="hint" role="status">Loading bitcoin++ conferences and talks…</p>
+        <button type="button" class="btn" id="broadcast-retry" hidden>Retry loading</button>
+        <noscript>JavaScript is required to change the bitcoin++ live page. Existing links are preserved.</noscript>
+    </fieldset>
 	<div class="field">
 		<label>Playlist clips</label>
 		{{if or .Videos .Stream}}
@@ -190,12 +216,14 @@ function addClip() {
 	if (!tpl || !list) return;
 	list.appendChild(tpl.content.cloneNode(true));
 	updateBandwidth();
+	if (window.refreshBroadcastMatch) window.refreshBroadcastMatch();
 }
 function removeClip(btn) {
 	const list = document.getElementById('clips');
 	if (!list || list.children.length <= 1) return;
 	btn.closest('li').remove();
 	updateBandwidth();
+	if (window.refreshBroadcastMatch) window.refreshBroadcastMatch();
 }
 function moveClip(btn, dir) {
 	const li = btn.closest('li');
@@ -310,10 +338,13 @@ function selectSpacesFile(path) {
 	input.value = path;
 	input.focus();
 	updateBandwidth();
+	if (window.refreshBroadcastMatch) window.refreshBroadcastMatch();
 }
 
 document.addEventListener('change', updateBandwidth);
+document.getElementById('clips').addEventListener('input', () => { if (window.refreshBroadcastMatch) window.refreshBroadcastMatch(); });
 document.addEventListener('DOMContentLoaded', updateBandwidth);
 updateBandwidth();
 </script>
+{{template "broadcast_picker.html" .}}
 {{end}}

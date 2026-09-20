@@ -1,0 +1,151 @@
+{{define "broadcast_picker.html"}}
+<script>
+(() => {
+    const byId = id => document.getElementById(id);
+    const mode = byId('broadcast-mode');
+    const recording = byId('broadcast-recording');
+    const conference = byId('broadcast-conference');
+    const confChoice = byId('conference-choice');
+    const talkChoice = byId('talk-choice');
+    const confSearch = byId('conference-search');
+    const talkSearch = byId('talk-search');
+    const status = byId('broadcast-status');
+    let catalog = null;
+    let chosenConference = conference.value;
+    let chosenRecording = recording.value;
+    const submittedMode = {{.BroadcastMode}};
+    mode.value = submittedMode || (recording.value ? 'talk' : conference.value ? 'conference' : {{if and .Stream .Stream.ID}}'none'{{else}}'auto'{{end}});
+
+    // Match complete object keys, never basenames: different talks can share a
+    // filename. A URL cannot safely be equated with a key from another origin.
+    function matchingRecordings(clips, conferences) {
+        if (clips.length !== 1) return [];
+        const key = clips[0].trim().replace(/^\.\//, '');
+        if (!key) return [];
+        const matches = new Map();
+        for (const conf of conferences) {
+            for (const talk of conf.talks || []) {
+                if (talk.recording && talk.recording.id && (talk.recording.file_uri || '').trim().replace(/^\.\//, '') === key) {
+                    matches.set(talk.recording.id, {conf, talk});
+                }
+            }
+        }
+        return [...matches.values()];
+    }
+
+    function option(select, value, label, selected, disabled = false) {
+        const node = new Option(label, value, false, selected);
+        node.disabled = disabled;
+        select.add(node);
+    }
+    function renderChoices() {
+        if (!catalog) return;
+        const query = confSearch.value.trim().toLowerCase();
+        confChoice.replaceChildren();
+        option(confChoice, '', 'Choose conference', !chosenConference);
+        for (const conf of catalog) {
+            const date = conf.starts_at ? conf.starts_at.slice(0, 10) : 'Date not set';
+            const label = `${conf.tag} — ${conf.description} — ${date}`;
+            if (conf.tag === chosenConference || `${label} ${conf.location}`.toLowerCase().includes(query)) {
+                option(confChoice, conf.tag, label, conf.tag === chosenConference);
+            }
+        }
+        if (chosenConference && !catalog.some(c => c.tag === chosenConference)) {
+            option(confChoice, chosenConference, `${chosenConference} (saved selection, unavailable)`, true);
+        }
+        talkChoice.replaceChildren();
+        option(talkChoice, '', 'Choose talk', !chosenRecording);
+        const conf = catalog.find(c => c.tag === chosenConference);
+        const search = talkSearch.value.trim().toLowerCase();
+        let found = false;
+        for (const talk of conf?.talks || []) {
+            const id = talk.recording?.id || '';
+            const speakers = (talk.speakers || []).map(s => s.name).join(', ');
+            const label = `${talk.title}${speakers ? ' — ' + speakers : ''}${!id ? ' (no recording attached)' : ''}`;
+            if (id && id === chosenRecording) found = true;
+            if ((id && id === chosenRecording) || label.toLowerCase().includes(search)) {
+                option(talkChoice, id, label, !!id && id === chosenRecording, !id);
+            }
+        }
+        if (chosenRecording && !found) option(talkChoice, chosenRecording, 'Saved recording (unavailable in this catalog)', true);
+    }
+    function visibility() {
+        byId('broadcast-choices').hidden = mode.value === 'none';
+        byId('talk-choices').hidden = !['auto', 'talk'].includes(mode.value);
+        confChoice.required = mode.value === 'conference';
+        talkChoice.required = mode.value === 'talk';
+    }
+    function applyChoice() {
+        visibility();
+        if (mode.value === 'auto') { autoMatch(); return; }
+        recording.value = mode.value === 'talk' ? chosenRecording : '';
+        conference.value = mode.value === 'conference' ? chosenConference : '';
+        status.textContent = mode.value === 'none' ? 'This stream will not update bitcoin++.'
+            : mode.value === 'conference' ? (chosenConference ? `Live page: /${chosenConference}/live` : 'Choose a conference.')
+            : chosenRecording ? `Live page: /watch/${chosenRecording}` : 'Choose a conference and a talk with an attached recording.';
+    }
+    function autoMatch() {
+        if (mode.value !== 'auto' || !catalog) return;
+        const clips = [...document.querySelectorAll('#clips input[name="video_file"]')].map(el => el.value.trim()).filter(Boolean);
+        const matches = matchingRecordings(clips, catalog);
+        recording.value = '';
+        conference.value = '';
+        if (matches.length === 1) {
+            const {conf, talk} = matches[0];
+            chosenConference = conf.tag;
+            chosenRecording = talk.recording.id;
+            recording.value = chosenRecording;
+            status.textContent = `Matched video to “${talk.title}” (${conf.tag}). Change the conference or talk below to override this match.`;
+        } else {
+            chosenConference = '';
+            chosenRecording = '';
+            status.textContent = clips.length > 1 ? 'Multiple clips: choose a conference-wide stream or select a talk explicitly.'
+                : matches.length > 1 ? 'This video is attached to multiple talks. Select the intended talk.'
+                : 'No matching recording found. Choose a conference-wide stream or select a talk explicitly.';
+        }
+        renderChoices();
+    }
+    window.refreshBroadcastMatch = autoMatch;
+    mode.addEventListener('change', applyChoice);
+    confSearch.addEventListener('input', renderChoices);
+    talkSearch.addEventListener('input', renderChoices);
+    confChoice.addEventListener('change', () => {
+        if (mode.value === 'auto') mode.value = 'talk';
+        chosenConference = confChoice.value;
+        chosenRecording = '';
+        talkSearch.value = '';
+        renderChoices(); applyChoice();
+    });
+    talkChoice.addEventListener('change', () => {
+        if (mode.value === 'auto') mode.value = 'talk';
+        chosenRecording = talkChoice.value;
+        applyChoice();
+    });
+    async function load() {
+        byId('broadcast-retry').hidden = true;
+        status.textContent = 'Loading bitcoin++ conferences and talks…';
+        try {
+            const response = await fetch('/streams/broadcast-catalog', {cache: 'no-store'});
+            if (!response.ok) throw new Error(await response.text());
+            catalog = await response.json();
+            const saved = catalog.find(c => (c.talks || []).some(t => t.recording?.id === chosenRecording));
+            if (saved && !chosenConference) chosenConference = saved.tag;
+            for (const el of [confSearch, confChoice, talkSearch, talkChoice]) el.disabled = false;
+            renderChoices(); applyChoice();
+        } catch (err) {
+            status.textContent = `Could not load bitcoin++ choices. Existing links are preserved. ${err.message}`;
+            byId('broadcast-retry').hidden = false;
+        }
+    }
+    mode.closest('form').addEventListener('submit', event => {
+        if ((mode.value === 'auto' && !catalog) || (mode.value === 'talk' && !recording.value) || (mode.value === 'conference' && !conference.value)) {
+            event.preventDefault();
+            status.textContent = 'Choose a bitcoin++ target, retry loading, or select “No bitcoin++ live page” before saving.';
+        }
+    });
+    byId('broadcast-retry').addEventListener('click', load);
+    visibility();
+    load();
+})();
+</script>
+{{end}}

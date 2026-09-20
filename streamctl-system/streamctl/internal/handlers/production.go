@@ -320,7 +320,10 @@ func conferenceSortKey(conference btcppclient.Conference) string {
 	if conference.StartsAt == nil {
 		return ""
 	}
-	return *conference.StartsAt
+	if start, err := time.Parse(time.RFC3339, *conference.StartsAt); err == nil {
+		return start.UTC().Format(time.RFC3339Nano)
+	}
+	return ""
 }
 
 func (h *Handler) productionTalks(ctx context.Context, conference string) ([]productionTalkView, error) {

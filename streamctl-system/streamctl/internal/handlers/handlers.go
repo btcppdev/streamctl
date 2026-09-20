@@ -113,6 +113,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/live/", http.StripPrefix("/live/", http.HandlerFunc(h.liveFile)))
 
 	mux.Handle("/", h.auth(http.HandlerFunc(h.index)))
+	mux.Handle("/streams/broadcast-catalog", h.auth(http.HandlerFunc(h.broadcastCatalog)))
 	mux.Handle("/streams/new", h.auth(http.HandlerFunc(h.streamNew)))
 	mux.Handle("/streams/create", h.mutation(http.HandlerFunc(h.streamCreate)))
 	mux.Handle("/streams/edit/", h.auth(http.HandlerFunc(h.streamEdit)))
@@ -484,7 +485,15 @@ func (h *Handler) renderStreamForm(w http.ResponseWriter, r *http.Request, statu
 			defaultSchedule = s.ScheduleType
 		}
 	}
+	broadcastMode := ""
+	if r.Method == http.MethodPost {
+		switch value := r.FormValue("btcpp_target_mode"); value {
+		case "auto", "talk", "conference", "none":
+			broadcastMode = value
+		}
+	}
 	h.renderStatus(w, r, status, "stream_form.html", map[string]any{
+		"BroadcastMode":   broadcastMode,
 		"Stream":          s,
 		"Videos":          files,
 		"BitratesJSON":    bitratesJSON(h.VideoDir, files),
@@ -522,6 +531,7 @@ func (h *Handler) streamDraftFromForm(r *http.Request) *db.Stream {
 		NostrTitle:       strings.TrimSpace(r.FormValue("nostr_title")),
 		NostrSummary:     strings.TrimSpace(r.FormValue("nostr_summary")),
 		BTCPPRecordingID: strings.TrimSpace(r.FormValue("btcpp_recording_id")),
+		BTCPPConference:  strings.TrimSpace(r.FormValue("btcpp_conference")),
 		Enabled:          r.FormValue("enabled") == "on",
 	}
 }
@@ -674,7 +684,11 @@ func (h *Handler) streamFromForm(r *http.Request) (*db.Stream, []int64, []string
 		NostrTitle:       strings.TrimSpace(r.FormValue("nostr_title")),
 		NostrSummary:     strings.TrimSpace(r.FormValue("nostr_summary")),
 		BTCPPRecordingID: strings.TrimSpace(r.FormValue("btcpp_recording_id")),
+		BTCPPConference:  strings.TrimSpace(r.FormValue("btcpp_conference")),
 		Enabled:          r.FormValue("enabled") == "on",
+	}
+	if s.BTCPPConference != "" && (s.BTCPPRecordingID != "" || !validProductionConference(s.BTCPPConference)) {
+		return nil, nil, nil, fmt.Errorf("choose either a recording ID or a valid conference tag for bitcoin++ broadcasting")
 	}
 	if s.NostrEnabled {
 		if s.NostrKeyID == 0 {
@@ -3651,7 +3665,7 @@ func (h *Handler) renderStatus(w http.ResponseWriter, r *http.Request, status in
 		}
 		return ""
 	}
-	tmpl, err := template.New("").Funcs(funcs).ParseFS(tmpls, "layout.html", "production_media_browser.html", "production_media_preview.html", name)
+	tmpl, err := template.New("").Funcs(funcs).ParseFS(tmpls, "layout.html", "production_media_browser.html", "production_media_preview.html", "broadcast_picker.html", name)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
