@@ -94,7 +94,7 @@ func TestBroadcastUsesServiceCredential(t *testing.T) {
 	}
 	s := &db.Stream{ID: 7, BTCPPRecordingID: "recording-1"}
 	unit := m.renderService(s)
-	if !strings.Contains(unit, "LoadCredential=\"btcpp-api-token:/root/private token\"\n") {
+	if !strings.Contains(unit, "LoadCredential=btcpp-api-token:/root/private token\n") {
 		t.Fatalf("service does not load the root-owned token: %s", unit)
 	}
 	if strings.Contains(unit, "ReadOnlyPaths=/videos /root/private token") {
@@ -121,6 +121,18 @@ func TestStreamServiceEnablesIPAccounting(t *testing.T) {
 	unit := m.renderService(&db.Stream{ID: 7, Name: "A talk"})
 	if !strings.Contains(unit, "IPAccounting=true") {
 		t.Fatalf("stream service did not enable network accounting:\n%s", unit)
+	}
+}
+
+func TestCredentialPathIsLiteralWithEscapedSpecifiers(t *testing.T) {
+	m := &Manager{
+		PublicBaseURL: "https://stream.example", BTCPPAPIBase: "https://btcpp.dev",
+		BTCPPTokenFile: `/root/private tokens/100% "literal"\token`,
+	}
+	unit := m.renderService(&db.Stream{ID: 7, BTCPPRecordingID: "recording-1"})
+	want := "LoadCredential=btcpp-api-token:/root/private tokens/100%% \"literal\"\\token\n"
+	if !strings.Contains(unit, want) {
+		t.Fatalf("credential path was quoted or escaped as argv:\n%s", unit)
 	}
 }
 

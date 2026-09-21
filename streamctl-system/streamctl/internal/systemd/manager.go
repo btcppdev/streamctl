@@ -422,7 +422,9 @@ func (m *Manager) renderService(s *db.Stream) string {
 	}
 	credentials := ""
 	if m.btcppBroadcastConfigured(s) {
-		credentials = "LoadCredential=" + systemdQuote("btcpp-api-token:"+strings.ReplaceAll(m.BTCPPTokenFile, "%", "%%")) + "\n"
+		// LoadCredential parses ID:PATH literally, unlike ExecStart argv:
+		// quoting the value adds quotes to both the ID and source filename.
+		credentials = "LoadCredential=btcpp-api-token:" + strings.ReplaceAll(m.BTCPPTokenFile, "%", "%%") + "\n"
 	}
 	return fmt.Sprintf(`[Unit]
 Description=streamctl: %s
