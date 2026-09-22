@@ -274,7 +274,7 @@ func (h *Handler) streamCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	s, ids, videos, err := h.streamFromForm(r)
+	s, ids, videos, err := h.streamFromForm(r, nil)
 	if err != nil {
 		draft := h.streamDraftFromForm(r)
 		if renderErr := h.renderStreamForm(w, r, http.StatusBadRequest, "New stream", "/streams/create", draft, selectedEndpointIDsFromForm(r), draft.ScheduleType, err.Error()); renderErr != nil {
@@ -330,14 +330,20 @@ func (h *Handler) streamUpdate(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	existing, err := h.DB.GetStream(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	s, ids, videos, err := h.streamFromForm(r)
+	s, ids, videos, err := h.streamFromForm(r, existing)
 	if err != nil {
 		draft := h.streamDraftFromForm(r)
 		draft.ID = id
+		draft.AutoScheduled = existing.AutoScheduled
 		if renderErr := h.renderStreamForm(w, r, http.StatusBadRequest, "Edit stream", fmt.Sprintf("/streams/update/%d", id), draft, selectedEndpointIDsFromForm(r), draft.ScheduleType, err.Error()); renderErr != nil {
 			http.Error(w, renderErr.Error(), http.StatusInternalServerError)
 		}
@@ -634,7 +640,7 @@ func (h *Handler) spacesBrowse(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
-func (h *Handler) streamFromForm(r *http.Request) (*db.Stream, []int64, []string, error) {
+func (h *Handler) streamFromForm(r *http.Request, existing *db.Stream) (*db.Stream, []int64, []string, error) {
 	name := strings.TrimSpace(r.FormValue("name"))
 	if name == "" {
 		return nil, nil, nil, fmt.Errorf("name required")
@@ -655,8 +661,13 @@ func (h *Handler) streamFromForm(r *http.Request) (*db.Stream, []int64, []string
 	if len(videos) == 0 {
 		return nil, nil, nil, fmt.Errorf("at least one video clip required")
 	}
-	if err := h.validateNormalizedStreamVideos(r.Context(), videos); err != nil {
-		return nil, nil, nil, err
+	// Imported broadcasts play finished renders directly, just as they do in
+	// systemd.Manager.normalizeStream. Only trust the persisted plan link.
+	autoScheduled := existing != nil && existing.AutoScheduled
+	if !autoScheduled {
+		if err := h.validateNormalizedStreamVideos(r.Context(), videos); err != nil {
+			return nil, nil, nil, err
+		}
 	}
 	if err := h.validateCachedPlaylist(videos); err != nil {
 		return nil, nil, nil, err
@@ -682,6 +693,7 @@ func (h *Handler) streamFromForm(r *http.Request) (*db.Stream, []int64, []string
 	}
 
 	s := &db.Stream{
+		AutoScheduled:    autoScheduled,
 		Name:             name,
 		ScheduleType:     scheduleType,
 		OnCalendar:       onCalendar,

@@ -83,7 +83,8 @@
 		<div class="hint">
 			Clips play back-to-back as a single uninterrupted stream.
 			All clips must share codec, resolution, frame rate, pixel format, and audio params — verified with ffprobe on save.
-			Use a local uploaded filename, or a Spaces <code>recordings/edits</code> path that has already been processed on the GPU.
+			{{if and .Stream .Stream.AutoScheduled}}This imported broadcast plays finished recordings directly from their Spaces paths.
+			{{else}}Use a local uploaded filename, or a Spaces <code>recordings/edits</code> path that has already been processed on the GPU.{{end}}
 		</div>
 		{{else}}
 		<ol id="clips" class="clip-list">
