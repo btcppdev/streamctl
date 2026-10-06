@@ -28,6 +28,16 @@ This means scheduled streams keep running even if the web app is restarted or cr
 
 ## Full-talk recording registration
 
+Talk-card template segments resolve from the recording-candidates API's
+`social_card` field, which contains the website's saved Spaces object path or
+legacy public Spaces URL. URLs for the `btcpp.nyc3.digitaloceanspaces.com`
+bucket and its CDN are converted to object keys; other origins, URL credentials,
+queries, and fragments are rejected. Cards must belong to the selected conference.
+The website API must expose this field before generating renders with talk cards.
+Missing or invalid paths stop generation; filenames are never inferred from
+talk IDs. Existing render drafts keep their resolved image paths and must be
+corrected manually or regenerated if they were created with guessed paths.
+
 Renders generated from templates containing `streamctl.talkCuts` are explicitly
 designated full-talk recordings. Blank renders, duplicated renders, and other
 talk-associated outputs are not automatically registered. That designation is
