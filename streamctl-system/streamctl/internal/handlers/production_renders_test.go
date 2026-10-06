@@ -65,9 +65,59 @@ func TestExpandProductionTemplate(t *testing.T) {
 	}
 }
 
+func TestTalkCardUsesSavedAPIPath(t *testing.T) {
+	for _, tc := range []struct{ name, card, want string }{
+		{"legacy ID", "/berlin25/talks/legacy-id-1080p.png", "berlin25/talks/legacy-id-1080p.png"},
+		{"object key", "berlin25/talks/custom.png", "berlin25/talks/custom.png"},
+		{"Spaces URL", "https://btcpp.nyc3.digitaloceanspaces.com/berlin25/talks/legacy-id-1080p.png", "berlin25/talks/legacy-id-1080p.png"},
+		{"Spaces CDN URL", "https://btcpp.nyc3.cdn.digitaloceanspaces.com/berlin25/talks/legacy-id-1080p.png", "berlin25/talks/legacy-id-1080p.png"},
+		{"escaped URL path", "https://btcpp.nyc3.digitaloceanspaces.com/berlin25/talks/custom%20card.png", "berlin25/talks/custom card.png"},
+		{"missing", "", ""},
+		{"whitespace", "  ", ""},
+		{"traversal", "berlin25/../private.png", ""},
+		{"URL", "https://example.com/card.png", ""},
+		{"other bucket", "https://other.nyc3.digitaloceanspaces.com/berlin25/talks/card.png", ""},
+		{"host suffix", "https://btcpp.nyc3.digitaloceanspaces.com.example.com/berlin25/talks/card.png", ""},
+		{"insecure URL", "http://btcpp.nyc3.digitaloceanspaces.com/berlin25/talks/card.png", ""},
+		{"URL credentials", "https://user@btcpp.nyc3.digitaloceanspaces.com/berlin25/talks/card.png", ""},
+		{"URL query", "https://btcpp.nyc3.digitaloceanspaces.com/berlin25/talks/card.png?download=1", ""},
+		{"URL fragment", "https://btcpp.nyc3.digitaloceanspaces.com/berlin25/talks/card.png#fragment", ""},
+		{"escaped traversal", "https://btcpp.nyc3.digitaloceanspaces.com/berlin25/%2e%2e/card.png", ""},
+		{"malformed URL", "https://btcpp.nyc3.digitaloceanspaces.com/berlin25/talks/%zz.png", ""},
+		{"protocol relative URL", "//btcpp.nyc3.digitaloceanspaces.com/berlin25/talks/card.png", ""},
+		{"other conference", "/toronto/talks/card.png", ""},
+		{"backslash", `berlin25/talks\card.png`, ""},
+		{"not image", "berlin25/talks/video.mp4", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			segments, err := expandProductionTemplate([]json.RawMessage{json.RawMessage(`{"type":"streamctl.talkCard","durationMs":5000}`)}, "berlin25", "new-talk-id", tc.card, nil)
+			if tc.want == "" {
+				if err == nil {
+					t.Fatal("expected an error, not a guessed filename")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			var result struct {
+				Type       string `json:"type"`
+				Src        string `json:"src"`
+				DurationMS int    `json:"durationMs"`
+			}
+			if err := json.Unmarshal(segments[0], &result); err != nil {
+				t.Fatal(err)
+			}
+			if result.Type != "image" || result.Src != tc.want || result.DurationMS != 5000 {
+				t.Fatalf("resolved card: %+v", result)
+			}
+		})
+	}
+}
+
 func TestProductionRendersGenerateAndEdit(t *testing.T) {
 	database := productionHandlerTestDB(t)
-	templateID, err := database.CreateProductionTemplate("toronto", "Standard talk", `{"version":1,"settings":{},"segments":[{"type":"streamctl.talkCuts"}]}`)
+	templateID, err := database.CreateProductionTemplate("toronto", "Standard talk", `{"version":1,"settings":{},"segments":[{"type":"streamctl.talkCard","durationMs":5000},{"type":"streamctl.talkCuts"}]}`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +126,7 @@ func TestProductionRendersGenerateAndEdit(t *testing.T) {
 	}
 	h := &Handler{DB: database, funcs: template.FuncMap{}, BTCPP: productionCandidatesStub{
 		conferences: []btcppclient.Conference{{Tag: "toronto", Description: "Toronto++"}},
-		candidates:  []btcppclient.Candidate{{TalkID: "talk-1", Title: "A Great Talk", Venue: "one"}, {TalkID: "talk-2", Title: "Uncut"}},
+		candidates:  []btcppclient.Candidate{{TalkID: "talk-1", Title: "A Great Talk", Venue: "one", SocialCard: "https://btcpp.nyc3.digitaloceanspaces.com/toronto/talks/legacy-id-1080p.png"}, {TalkID: "talk-2", Title: "Uncut"}},
 	}}
 	form := url.Values{"conference": {"toronto"}, "template_id": {strconv.FormatInt(templateID, 10)}}
 	request := httptest.NewRequest(http.MethodPost, "/production/renders/generate", strings.NewReader(form.Encode()))
@@ -89,6 +139,9 @@ func TestProductionRendersGenerateAndEdit(t *testing.T) {
 	items, err := database.ListProductionRenders("toronto")
 	if err != nil || len(items) != 1 || strings.Contains(items[0].JSON, "streamctl.") || !strings.Contains(items[0].JSON, `"id": "a-great-talk"`) {
 		t.Fatalf("items=%+v err=%v", items, err)
+	}
+	if !strings.Contains(items[0].JSON, `"src": "toronto/talks/legacy-id-1080p.png"`) {
+		t.Fatalf("render did not preserve the saved card's object key: %s", items[0].JSON)
 	}
 	response = httptest.NewRecorder()
 	h.productionRenders(response, httptest.NewRequest(http.MethodGet, "/production/renders?conference=toronto", nil))
@@ -151,6 +204,36 @@ func TestProductionRendersGenerateAndEdit(t *testing.T) {
 	h.productionRenderEdit(response, httptest.NewRequest(http.MethodGet, productionRenderURL("toronto", items[0].ID), nil))
 	if !strings.Contains(response.Body.String(), "Delete this render") {
 		t.Fatalf("sent render editor omitted delete action: %s", response.Body.String())
+	}
+}
+
+func TestProductionRenderGenerateRejectsUnavailableTalkCard(t *testing.T) {
+	for _, card := range []string{"", "https://example.com/toronto/talks/card.png"} {
+		t.Run(card, func(t *testing.T) {
+			database := productionHandlerTestDB(t)
+			templateID, err := database.CreateProductionTemplate("toronto", "Standard talk", `{"version":1,"settings":{},"segments":[{"type":"streamctl.talkCard"},{"type":"streamctl.talkCuts"}]}`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := database.ReplaceProductionCuts("toronto", "talk-1", []db.ProductionCut{{Source: "toronto/recordings/raw/talk.mp4", SourceType: "video", InMS: 0, OutMS: 1000}}); err != nil {
+				t.Fatal(err)
+			}
+			h := &Handler{DB: database, BTCPP: productionCandidatesStub{
+				candidates: []btcppclient.Candidate{{TalkID: "talk-1", Title: "A Great Talk", SocialCard: card}},
+			}}
+			form := url.Values{"conference": {"toronto"}, "template_id": {strconv.FormatInt(templateID, 10)}}
+			request := httptest.NewRequest(http.MethodPost, "/production/renders/generate", strings.NewReader(form.Encode()))
+			request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			response := httptest.NewRecorder()
+			h.productionRenderGenerate(response, request)
+			if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "A Great Talk") || !strings.Contains(response.Body.String(), "social card") {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			items, err := database.ListProductionRenders("toronto")
+			if err != nil || len(items) != 0 {
+				t.Fatalf("invalid card created a render: items=%+v err=%v", items, err)
+			}
+		})
 	}
 }
 

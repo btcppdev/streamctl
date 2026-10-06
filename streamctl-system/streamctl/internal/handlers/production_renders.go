@@ -452,11 +452,25 @@ func expandProductionTemplate(source []json.RawMessage, conference, talkID, soci
 			if err := json.Unmarshal(raw, &dynamic); err != nil {
 				return nil, err
 			}
-			card := strings.TrimPrefix(strings.TrimSpace(socialCard), "/")
+			card := strings.TrimSpace(socialCard)
 			if card == "" {
-				// This is the canonical key used by the website's 1080p talk-card generator.
-				// Keep the fallback until recording candidates expose SocialCard directly.
-				card = fmt.Sprintf("%s/talks/%s-1080p.png", conference, talkID)
+				return nil, fmt.Errorf("talk %s has no saved social card in the website API", talkID)
+			}
+			// Older website records store public Spaces URLs instead of object paths.
+			// Only strip the origin for the bucket used by the website.
+			if strings.Contains(card, "://") {
+				parsed, err := url.Parse(card)
+				if err != nil || parsed.Scheme != "https" || parsed.User != nil ||
+					(parsed.Host != "btcpp.nyc3.digitaloceanspaces.com" && parsed.Host != "btcpp.nyc3.cdn.digitaloceanspaces.com") ||
+					parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || strings.Contains(card, "#") {
+					return nil, fmt.Errorf("talk %s has an invalid saved social card URL", talkID)
+				}
+				card = parsed.Path
+			}
+			card = strings.TrimPrefix(card, "/")
+			if clean, err := validateRenderObjectKey(card); err != nil || clean != card ||
+				!strings.HasPrefix(card, conference+"/") || strings.Contains(card, `\`) || mediaFileKind(card) != "image" {
+				return nil, fmt.Errorf("talk %s has an invalid saved social card path", talkID)
 			}
 			segment := map[string]any{"type": "image", "src": card}
 			if dynamic.DurationMS != nil {

@@ -42,7 +42,8 @@ func TestClientListsCandidatesAndNeverPlacesTokenInURL(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"data": []map[string]any{{
 					"talk_id": "talk-1", "title": "A talk", "eligible": true,
-					"speakers": []map[string]any{{"person_id": "person-1", "name": "Ada", "company": "Babbage"}},
+					"social_card": "/dev26/talks/legacy-id-1080p.png",
+					"speakers":    []map[string]any{{"person_id": "person-1", "name": "Ada", "company": "Babbage"}},
 				}},
 			})
 		case "/api/v1/conferences":
@@ -56,6 +57,9 @@ func TestClientListsCandidatesAndNeverPlacesTokenInURL(t *testing.T) {
 	candidates, err := client.RecordingCandidates(context.Background(), "dev26")
 	if err != nil || len(candidates) != 1 || candidates[0].TalkID != "talk-1" || len(candidates[0].Speakers) != 1 || candidates[0].Speakers[0].Name != "Ada" {
 		t.Fatalf("candidates=%+v err=%v", candidates, err)
+	}
+	if candidates[0].SocialCard != "/dev26/talks/legacy-id-1080p.png" {
+		t.Fatalf("saved card path lost: %q", candidates[0].SocialCard)
 	}
 	conferences, err := client.Conferences(context.Background())
 	if err != nil || len(conferences) != 1 || conferences[0].Tag != "dev26" {
