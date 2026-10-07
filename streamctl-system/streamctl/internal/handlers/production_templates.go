@@ -83,7 +83,8 @@ type productionTemplateAudio struct {
 }
 
 type productionSegmentMetadata struct {
-	TalkTitle string `json:"talkTitle"`
+	TalkTitle    string `json:"talkTitle"`
+	TalkSchedule string `json:"talkSchedule,omitempty"`
 }
 
 type productionTemplateImageSegment struct {
