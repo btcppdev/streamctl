@@ -631,3 +631,45 @@ func TestProductionCutsSaveClearsAllRanges(t *testing.T) {
 		t.Fatalf("cuts=%+v err=%v", cuts, err)
 	}
 }
+
+func TestMediaOpenStreamsRangesWithoutCredentials(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Range") != "bytes=2-4" || r.Header.Get("If-Range") != "tag" {
+			t.Errorf("range headers missing")
+		}
+		if r.Header.Get("Cookie") != "" || r.Header.Get("Authorization") != "" {
+			t.Error("credentials forwarded")
+		}
+		w.Header().Set("Content-Type", "audio/mpeg")
+		w.Header().Set("Content-Range", "bytes 2-4/10")
+		w.Header().Set("Accept-Ranges", "bytes")
+		w.Header().Set("Content-Length", "3")
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write([]byte("abc"))
+	}))
+	defer upstream.Close()
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, "rclone"), []byte("#!/bin/sh\nprintf '"+upstream.URL+"\\n'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	h := &Handler{Remote: "test:bucket"}
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		req := httptest.NewRequest(method, "/production/media/open?conference=berlin26&path=berlin26/recordings/assets/music.mp3&stream=1", nil)
+		req.Header.Set("Range", "bytes=2-4")
+		req.Header.Set("If-Range", "tag")
+		req.Header.Set("Cookie", "secret=private")
+		req.Header.Set("Authorization", "Bearer private")
+		response := httptest.NewRecorder()
+		h.mediaOpen(response, req)
+		if response.Code != http.StatusPartialContent || response.Header().Get("Content-Range") != "bytes 2-4/10" {
+			t.Fatalf("response: %d %v %s", response.Code, response.Header(), response.Body.String())
+		}
+		if method == http.MethodGet && response.Body.String() != "abc" {
+			t.Fatal("missing range body")
+		}
+		if method == http.MethodHead && response.Body.Len() != 0 {
+			t.Fatal("HEAD has a body")
+		}
+	}
+}

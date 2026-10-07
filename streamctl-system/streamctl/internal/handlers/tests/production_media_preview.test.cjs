@@ -9,10 +9,12 @@ const vm = require('node:vm');
 function player() {
   const timers = new Map();
   let timerID = 0;
+  const gains=[];
   class Element {
     constructor() {
       this.children = new Map();
       this.attributes = {};
+      this.dataset = {};
       this.style = {setProperty() {}};
       this.classList = {add() {}, remove() {}};
       this.textContent = '';
@@ -30,6 +32,7 @@ function player() {
     setPointerCapture() {}
     hasPointerCapture() { return false; }
     insertBefore() {}
+    appendChild() {}
     remove() {}
   }
   class Video extends Element {
@@ -62,11 +65,11 @@ function player() {
       this.onseeked();
     }
   }
-  const root = new Element(), video = new Video(), videos = [video];
+  const root = new Element(), video = new Video(), videos = [video], audios = [];
   root.children.set('video', video);
   const context = {
-    document: {documentElement: {}, activeElement: null, createElement() { const node = new Video(); videos.push(node); return node; }},
-    window: {addEventListener() {}},
+    document: {documentElement: {}, activeElement: null, createElement(tag) { const node = new Video(); (tag === "audio" ? audios : videos).push(node); return node; }},
+    window: {addEventListener() {}, AudioContext: class { constructor(){this.destination={}} createMediaElementSource(){return {connect(){},disconnect(){}}} createGain(){const node={gain:{value:1},connect(){},disconnect(){}};gains.push(node);return node} resume(){return Promise.resolve()} }},
     getComputedStyle: () => ({getPropertyValue: () => ''}),
     requestAnimationFrame: () => 1, cancelAnimationFrame() {},
     setTimeout(fn) { timers.set(++timerID, fn); return timerID; },
@@ -79,7 +82,7 @@ function player() {
   vm.runInContext(html.match(/<script>([\s\S]*?)<\/script>/)[1], context);
   const preview = context.createProductionMediaPreview(root);
   return {
-    preview, video, videos, root,
+    preview, video, videos, audios, root, gains,
     async load(at = 0) { await preview.loadVideo('berlin25/recordings/raw/mix/day1.mp4', 'video', at); },
     async ready() { await this.load(); video.metadata(); video.canplay(); },
     expireTimers() { const pending = [...timers.values()]; timers.clear(); pending.forEach(fn => fn()); },
@@ -250,4 +253,67 @@ test('ribbon scrubbing stays paused while coarse scrubbing resumes playback', as
     assert.equal(p.preview.ready(), true);
     assert.equal(p.video.paused, ribbon);
   }
+});
+
+async function audioPlayer(mode = 'replace') {
+  const p = player();
+  await p.preview.loadVideo('berlin26/recordings/assets/sponsor.mp4', 'video', 10_000, '',
+    {src:'berlin26/recordings/assets/safari.mp3', mode, in:'00:00:20.000', gainDb:-6, sourceGainDb:-3}, 10_000);
+  p.video.metadata(); p.video.settled(); p.video.canplay();
+  p.audio=p.audios[0]; p.audio.duration=300; p.audio.metadata(); p.audio.settled(); p.audio.canplay();
+  return p;
+}
+test('replacement audio uses segment-relative offset and follows play/pause', async () => {
+  const p=await audioPlayer();
+  assert.equal(p.video.muted,true);
+  assert.equal(p.audio.currentTime,20);
+  assert.match(p.audio.src,/stream=1/);
+  p.preview.togglePlay(); assert.equal(p.audio.paused,false);
+  p.preview.togglePlay(); assert.equal(p.audio.paused,true);
+});
+test('rounded video seeks position audio using the actual settled clock', async () => {
+  const p=await audioPlayer(); p.preview.togglePlay();
+  p.preview.seek(12_345); assert.equal(p.audio.paused,true); assert.equal(p.video.paused,true);
+  p.video.settled(12.3); p.audio.settled();
+  assert.equal(p.audio.currentTime,22.3);
+});
+test('external buffering holds video and resumes both when ready', async () => {
+  const p=await audioPlayer(); p.preview.togglePlay();
+  p.audio.readyState=1; p.audio.onwaiting();
+  assert.equal(p.video.paused,true); assert.equal(p.preview.playing(),true);
+  p.audio.canplay(); assert.equal(p.video.paused,false); assert.equal(p.audio.paused,false);
+});
+test('mix uses a same-origin video and retains source sound; disabling restores it', async () => {
+  const p=await audioPlayer('mix'); assert.match(p.video.src,/stream=1/);
+  assert.equal(p.video.muted,false); p.preview.togglePlay();
+  p.preview.setAudio(); assert.equal(p.audio.paused,true); assert.equal(p.video.muted,false);
+});
+test('audio ends as silence and stale audio events cannot affect a new source', async () => {
+  const p=await audioPlayer(); p.audio.duration=19;
+  p.preview.togglePlay(); assert.equal(p.audio.paused,true); assert.equal(p.video.paused,false);
+  p.preview.setAudio({src:'berlin26/recordings/assets/chain-pulse.mp3',mode:'replace'});
+  const message=p.root.querySelector('.media-preview-audio-status').textContent;
+  p.audio.onerror(); assert.equal(p.root.querySelector('.media-preview-audio-status').textContent,message);
+});
+test('invalid audio timestamps stop playback with a visible error', async () => {
+  const p=await audioPlayer(); p.preview.setAudio({src:p.audio.dataset.source,in:'bad',mode:'replace'});
+  assert.match(p.root.querySelector('.media-preview-audio-status').textContent,/valid Audio in/);
+});
+
+test('mix applies independent audio and source dB gains', async () => {
+  const p=await audioPlayer('mix'); p.preview.togglePlay();
+  assert.ok(Math.abs(p.gains[0].gain.value-Math.pow(10,-6/20))<1e-9);
+  assert.ok(Math.abs(p.gains[1].gain.value-Math.pow(10,-3/20))<1e-9);
+  p.preview.setAudio(); assert.equal(p.gains[1].gain.value,1);
+});
+test('simultaneous buffering resumes when video becomes ready last', async () => {
+  const p=await audioPlayer(); p.preview.togglePlay();
+  p.video.onwaiting(); p.audio.readyState=1; p.audio.onwaiting();
+  p.audio.canplay(); assert.equal(p.video.paused,true);
+  p.video.canplay(); assert.equal(p.video.paused,false); assert.equal(p.audio.paused,false);
+});
+test('video buffering pauses audio until video is ready', async () => {
+  const p=await audioPlayer(); p.preview.togglePlay(); p.video.onwaiting();
+  p.video.ontimeupdate(); assert.equal(p.audio.paused,true);
+  p.video.canplay(); assert.equal(p.audio.paused,false);
 });
