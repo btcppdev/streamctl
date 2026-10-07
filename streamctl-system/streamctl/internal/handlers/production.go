@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"io"
 	"net/http"
 	"net/url"
 	"os/exec"
@@ -758,6 +759,42 @@ func (h *Handler) mediaOpen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Cache-Control", "private, no-store")
+	if r.URL.Query().Get("stream") == "1" {
+		// Web Audio needs an untainted, same-origin media resource. Spaces signed
+		// redirects do not provide CORS headers. Forward only media range headers,
+		// never the administrator's cookies or authorization to storage.
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		request, err := http.NewRequestWithContext(r.Context(), http.MethodGet, link, nil)
+		if err != nil {
+			http.Error(w, "could not open media", http.StatusBadGateway)
+			return
+		}
+		for _, header := range []string{"Range", "If-Range"} {
+			if value := r.Header.Get(header); value != "" {
+				request.Header.Set(header, value)
+			}
+		}
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			http.Error(w, "could not read media", http.StatusBadGateway)
+			return
+		}
+		defer response.Body.Close()
+		for _, header := range []string{"Content-Type", "Content-Length", "Content-Range", "Accept-Ranges", "ETag", "Last-Modified"} {
+			if value := response.Header.Get(header); value != "" {
+				w.Header().Set(header, value)
+			}
+		}
+		w.WriteHeader(response.StatusCode)
+		if r.Method != http.MethodHead {
+			_, _ = io.Copy(w, response.Body)
+		}
+		return
+	}
 	http.Redirect(w, r, link, http.StatusTemporaryRedirect)
 }
 
