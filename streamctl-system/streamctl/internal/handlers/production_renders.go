@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"streamctl/internal/db"
+	"streamctl/internal/renderdraft"
 )
 
 type productionRenderListItem struct {
@@ -32,14 +33,15 @@ type productionRenderListItem struct {
 }
 
 type productionRendersPage struct {
-	Nav       productionNavView
-	Renders   []productionRenderListItem
-	Templates []db.ProductionTemplate
-	Generated int
-	Skipped   int
-	Queued    int
-	Deleted   int
-	Error     string
+	Nav           productionNavView
+	Renders       []productionRenderListItem
+	Templates     []db.ProductionTemplate
+	TalkTemplates []db.ProductionTemplate
+	Generated     int
+	Skipped       int
+	Queued        int
+	Deleted       int
+	Error         string
 }
 
 type productionRenderManifest struct {
@@ -104,6 +106,13 @@ func (h *Handler) productionRenders(w http.ResponseWriter, r *http.Request) {
 	if err != nil && page.Error == "" {
 		page.Error = err.Error()
 	}
+	for _, item := range page.Templates {
+		var def productionTemplateDefinition
+		if json.Unmarshal([]byte(item.JSON), &def) == nil && def.Segments != nil && recipeNeedsTalk(*def.Segments) {
+			page.TalkTemplates = append(page.TalkTemplates, item)
+		}
+	}
+
 	h.render(w, r, "production_renders.html", page)
 }
 
@@ -356,7 +365,7 @@ func (h *Handler) productionRenderGenerate(w http.ResponseWriter, r *http.Reques
 	}
 	for _, talk := range talks {
 		talkCuts := cuts[talk.TalkID]
-		if len(talkCuts) == 0 {
+		if recordingKind == "full_talk" && len(talkCuts) == 0 {
 			skipped++
 			continue
 		}
@@ -365,6 +374,9 @@ func (h *Handler) productionRenderGenerate(w http.ResponseWriter, r *http.Reques
 			http.Error(w, fmt.Sprintf("generate %s: %v", talk.Title, err), http.StatusBadRequest)
 			return
 		}
+		clip := makeProductionClip(recipe.Name, templateID, *definition.Segments, &talk, segments)
+		encodedClip, _ := json.Marshal(clip)
+		segments = []json.RawMessage{encodedClip}
 		manifest, err := productionRenderManifestJSON(talk.Title, definition.Settings, segments)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -386,15 +398,42 @@ func (h *Handler) productionRenderGenerate(w http.ResponseWriter, r *http.Reques
 }
 
 func validateProductionRenderEditor(raw []byte) (productionTemplateDefinition, error) {
-	canonical, err := validateProductionTemplate(raw)
-	if err != nil {
-		return productionTemplateDefinition{}, err
-	}
 	var definition productionTemplateDefinition
-	if err := json.Unmarshal([]byte(canonical), &definition); err != nil {
+	if len(raw) > maxRenderManifestBytes {
+		return definition, errors.New("draft is too large")
+	}
+	if err := decodeStrictJSON(raw, &definition); err != nil {
+		return definition, err
+	}
+	if definition.Version != 1 || definition.Segments == nil {
+		return definition, errors.New("version 1 segments are required")
+	}
+	if len(definition.Settings) == 0 || string(definition.Settings) == "null" {
+		return definition, errors.New("settings must be an object")
+	}
+	if err := validateProductionTemplateSettings(definition.Settings); err != nil {
 		return definition, err
 	}
 	for _, segment := range *definition.Segments {
+		if renderdraft.IsClip(segment) {
+			clip, err := renderdraft.DecodeClip(segment)
+			if err != nil {
+				return definition, err
+			}
+			if clip.Template != nil {
+				for _, recipe := range clip.Template.Recipe {
+					if err := validateProductionTemplateSegment(recipe); err != nil {
+						return definition, err
+					}
+				}
+			}
+		}
+	}
+	leaves, err := renderdraft.Flatten(*definition.Segments, false)
+	if err != nil {
+		return definition, err
+	}
+	for _, segment := range leaves {
 		var header struct {
 			Type string `json:"type"`
 		}
@@ -402,7 +441,11 @@ func validateProductionRenderEditor(raw []byte) (productionTemplateDefinition, e
 		if strings.HasPrefix(header.Type, "streamctl.") {
 			return definition, errors.New("render jobs may not contain dynamic template segments")
 		}
+		if err := validateProductionTemplateSegment(segment); err != nil {
+			return definition, err
+		}
 	}
+
 	return definition, nil
 }
 
@@ -620,29 +663,25 @@ func productionWorkerManifest(raw string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	for _, segment := range *editor.Segments {
-		if err := validateProductionTemplateSegment(segment); err != nil {
-			return "", err
-		}
+	editorJSON, err := json.Marshal(editor)
+	if err != nil {
+		return "", err
+	}
+	if _, err := validateProductionRenderEditor(editorJSON); err != nil {
+		return "", err
 	}
 	var manifest productionRenderManifest
 	if err := decodeStrictJSON([]byte(raw), &manifest); err != nil {
 		return "", err
 	}
 	for j := range manifest.Jobs {
-		for i, segment := range manifest.Jobs[j].Segments {
-			var fields map[string]json.RawMessage
-			if err := json.Unmarshal(segment, &fields); err != nil {
-				return "", err
-			}
-			delete(fields, "streamctl")
-			encoded, err := json.Marshal(fields)
-			if err != nil {
-				return "", err
-			}
-			manifest.Jobs[j].Segments[i] = encoded
+		flattened, err := renderdraft.Flatten(manifest.Jobs[j].Segments, true)
+		if err != nil {
+			return "", err
 		}
+		manifest.Jobs[j].Segments = flattened
 	}
+
 	encoded, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return "", err

@@ -137,7 +137,7 @@ func TestProductionRendersGenerateAndEdit(t *testing.T) {
 		t.Fatalf("status=%d location=%q body=%s", response.Code, response.Header().Get("Location"), response.Body.String())
 	}
 	items, err := database.ListProductionRenders("toronto")
-	if err != nil || len(items) != 1 || strings.Contains(items[0].JSON, "streamctl.") || !strings.Contains(items[0].JSON, `"id": "a-great-talk"`) {
+	if err != nil || len(items) != 1 || !strings.Contains(items[0].JSON, "streamctl.clip") || !strings.Contains(items[0].JSON, `"id": "a-great-talk"`) {
 		t.Fatalf("items=%+v err=%v", items, err)
 	}
 	if !strings.Contains(items[0].JSON, `"src": "toronto/talks/legacy-id-1080p.png"`) {
@@ -160,7 +160,7 @@ func TestProductionRendersGenerateAndEdit(t *testing.T) {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	for _, want := range []string{"A Great Talk", "Back to renders", "Render settings", `id="live-preview-mode"`, `role="switch"`, `data-project-preview`, "+ Add segment", "Choose media", "Duplicate", "Delete", ">Save</button>"} {
+	for _, want := range []string{"A Great Talk", "Back to renders", "Render settings", `id="live-preview-mode"`, `role="switch"`, `data-project-preview`, "+ Add media", "Choose media", "Duplicate", "Delete", ">Save</button>"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("render editor omitted %q: %s", want, body)
 		}

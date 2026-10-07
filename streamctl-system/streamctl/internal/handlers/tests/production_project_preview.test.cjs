@@ -197,3 +197,13 @@ test('timestamp Enter commits directly to the project engine while staying pause
  const p=player();await p.open([video()]);p.ready();const current=p.root.querySelector('.media-preview-current');current.value='00:00:04.500';
  current.onkeydown({key:'Enter',preventDefault(){},stopPropagation(){}});p.ready();assert.equal(p.preview.position(),4500);assert.equal(p.preview.playing(),false);
 });
+
+test('compound preview preserves flattened timing, child addresses, and programme labels',async()=>{
+ const a=image('a.png',3000),b=video('b.mp4',{in:'00:00:01',out:'00:00:05'}),c=image('c.png',4000);
+ const e=editor([{type:'streamctl.clip',name:'Blank interview',segments:[]},{type:'streamctl.clip',name:'Talk',talk:{schedule:'11:30'},segments:[a,b]},c]);
+ const entries=e.sandbox.flatEntries();assert.equal(entries.length,3);assert.equal(entries[1].top,1);assert.equal(entries[1].child,1);assert.equal(entries[1].segment,b);
+ const resolved=e.sandbox.projectSegments();assert.equal(resolved[0].programmeIndex,1);assert.equal(resolved[0].streamctl.talkTitle,'Talk');assert.equal(a.streamctl,undefined);
+ assert.equal(plan(resolved).duration,plan([a,b,c]).duration);
+ await e.mode('project');e.setProject(2500);await e.mode('edit');assert.equal(e.sandbox.selectedIndex,1);assert.equal(e.source(),1500);
+ await e.mode('project');e.sandbox.selectProjectSegment(0);await e.mode('edit');assert.equal(e.sandbox.selectedIndex,0);assert.equal(e.source(),0);
+});

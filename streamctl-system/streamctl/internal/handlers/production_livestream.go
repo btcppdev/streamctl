@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"streamctl/internal/db"
+	"streamctl/internal/renderdraft"
 )
 
 type productionLivestreamDay struct {
@@ -107,7 +109,7 @@ func (h *Handler) productionLivestreamOptions(w http.ResponseWriter, r *http.Req
 }
 
 // Assemble a snapshot: workers receive only ordinary conf-render segments.
-func assembleLivestream(talks []productionTalkView, cuts map[string][]db.ProductionCut, conference, day, stage string) (string, []json.RawMessage, []productionLivestreamOmission, error) {
+func assembleLivestream(talks []productionTalkView, cuts map[string][]db.ProductionCut, conference, day, stage string, recipes ...[]json.RawMessage) (string, []json.RawMessage, []productionLivestreamOmission, error) {
 	selected := []productionTalkView{}
 	for _, talk := range talks {
 		if livestreamDay(talk) == day && productionStageLabel(talk.Venue) == stage && stage != "" {
@@ -133,9 +135,12 @@ func assembleLivestream(talks []productionTalkView, cuts map[string][]db.Product
 	segments := []json.RawMessage{}
 	omitted := []productionLivestreamOmission{}
 	recipe := []json.RawMessage{json.RawMessage(`{"type":"streamctl.talkCard"}`), json.RawMessage(`{"type":"streamctl.talkCuts"}`)}
+	if len(recipes) > 0 {
+		recipe = recipes[0]
+	}
 	for _, talk := range selected {
 		reasons := []string{}
-		if len(cuts[talk.TalkID]) == 0 {
+		if recipeNeedsCuts(recipe) && len(cuts[talk.TalkID]) == 0 {
 			reasons = append(reasons, "No saved cuts")
 		}
 		expanded, err := expandProductionTemplate(recipe, conference, talk.TalkID, talk.SocialCard, cuts[talk.TalkID], talk.Title, productionTalkSchedule(talk.StartsAt, talk.EndsAt))
@@ -146,7 +151,9 @@ func assembleLivestream(talks []productionTalkView, cuts map[string][]db.Product
 			omitted = append(omitted, productionLivestreamOmission{Title: talk.Title, Reason: strings.Join(reasons, "; ")})
 			continue
 		}
-		segments = append(segments, expanded...)
+		clip := makeProductionClip("Card + saved cuts", 0, recipe, &talk, expanded)
+		encoded, _ := json.Marshal(clip)
+		segments = append(segments, encoded)
 	}
 	return name, segments, omitted, nil
 }
@@ -168,7 +175,27 @@ func (h *Handler) productionRenderCreateLivestream(w http.ResponseWriter, r *htt
 		fail(http.StatusInternalServerError, err)
 		return
 	}
-	name, segments, omitted, err := assembleLivestream(talks, cuts, conference, strings.TrimSpace(r.FormValue("day")), strings.TrimSpace(r.FormValue("stage")))
+	templateID := int64(0)
+	if value := r.FormValue("template_id"); value != "" {
+		var parseErr error
+		templateID, parseErr = strconv.ParseInt(value, 10, 64)
+		if parseErr != nil || templateID < 0 {
+			fail(400, fmt.Errorf("Choose a valid template"))
+			return
+		}
+	}
+	templateName, recipe, err := h.clipRecipe(conference, templateID)
+	if err != nil || !recipeNeedsTalk(recipe) {
+		fail(400, fmt.Errorf("Choose a template with talk placeholders"))
+		return
+	}
+	name, segments, omitted, err := assembleLivestream(talks, cuts, conference, strings.TrimSpace(r.FormValue("day")), strings.TrimSpace(r.FormValue("stage")), recipe)
+	for i, raw := range segments {
+		var clip renderdraft.Clip
+		_ = json.Unmarshal(raw, &clip)
+		clip.Template = &renderdraft.Template{ID: templateID, Name: templateName, Recipe: recipe}
+		segments[i], _ = json.Marshal(clip)
+	}
 	if err != nil {
 		fail(http.StatusBadRequest, err)
 		return
