@@ -13,6 +13,7 @@ import (
 
 	"streamctl/internal/btcppclient"
 	"streamctl/internal/db"
+	"streamctl/internal/renderdraft"
 )
 
 func livestreamCandidate(id, start, stage string) productionTalkView {
@@ -34,6 +35,10 @@ func TestAssembleLivestreamScheduleAndOmissions(t *testing.T) {
 	cut := db.ProductionCut{SourceType: "video", Source: "toronto/recordings/raw/talk.mp4", InMS: 1000, OutMS: 2000}
 	cuts := map[string][]db.ProductionCut{"a": {cut, {SourceType: "chunkedVideo", Source: "toronto/recordings/raw/part0000.mp4", InMS: 3000, OutMS: 4000}}, "b": {cut}, "later": {cut}, "bad-card": {cut}, "other-stage": {cut}, "other-day": {cut}}
 	name, segments, omitted, err := assembleLivestream(talks, cuts, "toronto", "2026-07-22", "Main")
+	if len(segments) != 3 {
+		t.Fatalf("expected three talk clips: %s", segments)
+	}
+	segments, err = renderdraft.Flatten(segments, false)
 	if err != nil || name != "Day 1 — Main livestream" || len(segments) != 7 || len(omitted) != 2 {
 		t.Fatalf("name=%s segments=%s omitted=%+v err=%v", name, segments, omitted, err)
 	}
@@ -84,7 +89,7 @@ func TestLivestreamCreateEditQueueSnapshot(t *testing.T) {
 		t.Fatalf("items=%+v err=%v", items, err)
 	}
 	item := items[0]
-	if item.TemplateID.Valid || item.TalkID != "" || strings.Contains(item.JSON, "streamctl.") {
+	if item.TemplateID.Valid || item.TalkID != "" || !strings.Contains(item.JSON, "streamctl.clip") {
 		t.Fatalf("unexpected association/dynamic block: %+v", item)
 	}
 	var kind string

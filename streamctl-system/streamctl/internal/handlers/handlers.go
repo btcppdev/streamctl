@@ -143,6 +143,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/production/templates/delete-selected", h.mutation(http.HandlerFunc(h.productionTemplatesDelete)))
 	mux.Handle("/production/renders", h.auth(http.HandlerFunc(h.productionRenders)))
 	mux.Handle("/production/renders/edit", h.auth(http.HandlerFunc(h.productionRenderEdit)))
+	mux.Handle("/production/renders/template-options", h.auth(http.HandlerFunc(h.productionTemplateOptions)))
+	mux.Handle("/production/renders/expand-template", h.mutation(http.HandlerFunc(h.productionExpandTemplate)))
 	mux.Handle("/production/renders/livestream-options", h.auth(http.HandlerFunc(h.productionLivestreamOptions)))
 	mux.Handle("/production/renders/create-livestream", h.mutation(http.HandlerFunc(h.productionRenderCreateLivestream)))
 	mux.Handle("/production/renders/create", h.mutation(http.HandlerFunc(h.productionRenderCreate)))
@@ -3705,7 +3707,7 @@ func (h *Handler) renderStatus(w http.ResponseWriter, r *http.Request, status in
 		}
 		return ""
 	}
-	tmpl, err := template.New("").Funcs(funcs).ParseFS(tmpls, "layout.html", "production_media_browser.html", "production_media_preview.html", "production_project_preview.html", "broadcast_picker.html", name)
+	tmpl, err := template.New("").Funcs(funcs).ParseFS(tmpls, "layout.html", "production_media_browser.html", "production_media_preview.html", "production_project_preview.html", "production_clip_editor.html", "broadcast_picker.html", name)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

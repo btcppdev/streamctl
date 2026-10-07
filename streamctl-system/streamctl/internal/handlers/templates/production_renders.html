@@ -15,6 +15,7 @@
 <p class="muted">Ready talks appear in schedule order, each preceded by its title card. Incomplete talks are skipped. Review the render before queueing it.</p>
 <label class="field">Day<select id="livestream-day" name="day" required disabled style="width:100%"></select></label>
 <label class="field">Stage<select id="livestream-stage" name="stage" required disabled style="width:100%"></select></label>
+<label class="field">Talk template<select name="template_id" aria-label="Talk template" style="width:100%"><option value="0">Card + saved cuts</option>{{range .TalkTemplates}}<option value="{{.ID}}">{{.Name}}</option>{{end}}</select></label>
 <p id="livestream-status" role="status" aria-live="polite"></p><ul id="livestream-omissions"></ul>
 <button class="btn btn-primary" id="livestream-create" type="submit" disabled>Create render</button>
 </form></dialog>
