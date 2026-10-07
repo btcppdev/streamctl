@@ -1,16 +1,11 @@
 {{define "productionProjectPreview"}}
 <style>
-.project-preview[hidden],.segment-preview[hidden]{display:none}.preview-modes{display:flex;gap:8px;margin-bottom:10px}.preview-modes [aria-pressed=true]{border-color:var(--accent);color:var(--accent)}.project-preview{border:1px solid var(--border);border-radius:7px;overflow:hidden;background:var(--panel)}.project-frame{position:relative;aspect-ratio:16/9;background:#000;overflow:hidden}.project-stage,.project-layer,.project-layer video,.project-layer img{position:absolute;inset:0;width:100%;height:100%}.project-layer{background:#000}.project-layer video,.project-layer img{object-fit:contain}.project-overlay{pointer-events:none}.project-controls{padding:12px}.project-coarse{width:100%;touch-action:none}.project-meta{display:flex;align-items:center;gap:10px;margin:9px 0;color:var(--muted);font:11px ui-monospace,monospace}.project-current{min-width:0;width:14ch;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:3px;padding:4px;font:inherit}.project-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.project-status{margin-top:8px;color:var(--muted);font-size:12px}.project-status:empty{display:none}.project-fine{position:relative;height:58px;background:var(--bg);border:1px solid var(--border);touch-action:none;cursor:ew-resize;overflow:hidden}.project-fine canvas{width:100%;height:100%;display:block}.project-fine::after{content:'';position:absolute;left:50%;top:0;bottom:0;width:2px;background:var(--accent)}.project-help{margin:8px 0 0;color:var(--muted);font-size:11px}
+.project-preview[hidden],.segment-preview[hidden]{display:none}.project-preview{border:1px solid var(--border);border-radius:7px;overflow:hidden;background:var(--panel)}.project-frame{position:relative;aspect-ratio:16/9;background:#000;overflow:hidden;border-bottom:1px solid var(--border)}.project-stage,.project-layer,.project-layer video,.project-layer img{position:absolute;inset:0;width:100%;height:100%}.project-layer{background:#000}.project-layer video,.project-layer img{object-fit:contain}.project-overlay{pointer-events:none}
 </style>
 <div class="project-preview" data-project-preview hidden>
  <div class="project-frame"><div class="project-stage"></div></div>
- <div class="project-controls">
-  <input class="project-coarse" type="range" min="0" max="0" step="1" value="0" aria-label="Project timeline" disabled>
-  <div class="project-meta"><button type="button" class="btn project-play" aria-label="Play project" disabled>▶</button><input class="project-current" aria-label="Project timestamp" value="00:00:00.000" spellcheck="false" disabled><span class="project-label"></span><span class="project-duration">00:00:00.000</span></div>
-  <div class="project-fine" tabindex="0" role="slider" aria-label="Fine project timeline" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0"><canvas></canvas></div>
-  <div class="project-status" role="status"></div>
-  <p class="project-help">Preview mode locks editing. Switch to Edit to adjust the current segment.</p>
- </div>
+ {{template "productionPlayerControls"}}
+
 </div>
 <script>
 // Separate from the source player: all coordinates here are output/project time.
@@ -72,8 +67,9 @@ const ProductionProjectTimeline = (() => {
  return {build,state,fromSource,selection,timestamp,timecode,clamp};
 })();
 
-function createProductionProjectPreview(root,{onSegment=()=>{},fetchInfo}={}){
- const T=ProductionProjectTimeline,stage=root.querySelector('.project-stage'),frame=root.querySelector('.project-frame'),coarse=root.querySelector('.project-coarse'),fine=root.querySelector('.project-fine'),canvas=fine.querySelector('canvas'),playButton=root.querySelector('.project-play'),current=root.querySelector('.project-current'),label=root.querySelector('.project-label'),durationLabel=root.querySelector('.project-duration'),status=root.querySelector('.project-status');
+function createProductionProjectPreview(root,{onSegment=()=>{},onNavigate=()=>{},fetchInfo}={}){
+ const T=ProductionProjectTimeline,stage=root.querySelector('.project-stage'),frame=root.querySelector('.project-frame'),coarse=root.querySelector('.media-preview-seek'),fine=root.querySelector('.media-preview-fine'),canvas=fine.querySelector('canvas'),playButton=root.querySelector('.media-preview-play'),current=root.querySelector('.media-preview-current'),label=root.querySelector('.media-preview-source-name'),durationLabel=root.querySelector('[data-preview-duration]'),status=root.querySelector('.media-preview-status');
+ coarse.setAttribute('aria-label','Project timeline');current.setAttribute('aria-label','Project timestamp');fine.setAttribute('aria-label','Fine project timeline');
  const cache=new Map(),pool=new Map(),session=`project-${Date.now().toString(36)}`;
  let plan=null,enabled=false,epoch=0,controller=null,context=null,position=0,anchor=0,running=false,wanted=false,raf=0,fineDrag=null,coarseDrag=null,reconciling=false,lastSelected=-1,fatal=false;
  const objectURL=key=>'/production/media/open?'+new URLSearchParams({conference:key.split('/')[0],path:key,session,stream:'1'});
@@ -196,20 +192,14 @@ function createProductionProjectPreview(root,{onSegment=()=>{},fetchInfo}={}){
   for(const item of pool.values())if(!state.active.some(e=>e.index===item.entry.index)){item.layer.style.opacity='0';for(const node of item.media)node.pause();gains(item,state.time)}
   stage.style.opacity=String(state.fade);
  }
- function drawFine(time){
-  const rect=fine.getBoundingClientRect();if(!rect.width||!plan)return;
-  const dpr=window.devicePixelRatio||1;canvas.width=Math.round(rect.width*dpr);canvas.height=Math.round(rect.height*dpr);
-  const ctx=canvas.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,rect.width,rect.height);ctx.font='10px ui-monospace,monospace';ctx.fillStyle='#8b95a7';ctx.strokeStyle='#8b95a7';
-  const start=time-2500,x=t=>(t-start)/5000*rect.width;
-  for(let t=Math.max(0,Math.ceil(start/100)*100);t<=Math.min(plan.duration,start+5000);t+=100){const major=t%1000===0;ctx.beginPath();ctx.moveTo(x(t),major?22:38);ctx.lineTo(x(t),58);ctx.stroke();if(major)ctx.fillText(T.timecode(t).slice(3,8),x(t)+2,14)}
-  ctx.strokeStyle='#6ea8fe';for(const e of plan.entries)if(e.start>=start&&e.start<=start+5000){ctx.beginPath();ctx.moveTo(x(e.start),0);ctx.lineTo(x(e.start),58);ctx.stroke()}
- }
+ function drawFine(time){if(plan)drawProductionPlayerRuler(fine,canvas,time,plan.duration,plan.entries.map(e=>e.start))}
+
  function update(time=clock()){
   if(!plan)return;
-  coarse.value=time;if(document.activeElement!==current)current.value=T.timecode(time);durationLabel.textContent=T.timecode(plan.duration);
+  coarse.value=time;coarse.style.setProperty?.('--seek-progress',`${time/plan.duration*100}%`);if(document.activeElement!==current)current.value=T.timecode(time);durationLabel.textContent=T.timecode(plan.duration);
   fine.setAttribute('aria-valuenow',String(Math.round(time)));fine.setAttribute('aria-valuetext',T.timecode(time));drawFine(time);
-  playButton.textContent=wanted?'❚❚':'▶';playButton.setAttribute('aria-label',wanted?'Pause project':'Play project');
-  const selected=T.selection(plan,time);if(selected){const e=plan.entries[selected.index];label.textContent=`${selected.index+1} / ${plan.entries.length} · ${e.src.split('/').pop()}`;if(selected.index!==lastSelected){lastSelected=selected.index;onSegment(selected)}}
+  (playButton.querySelector('span')||playButton).textContent=wanted?'❚❚':'▶';playButton.setAttribute('aria-label',wanted?'Pause project':'Play project');
+  const selected=T.selection(plan,time);if(selected){const e=plan.entries[selected.index];label.textContent=`${selected.index+1} / ${plan.entries.length} · ${e.streamctl?.talkTitle||e.src.split('/').pop()}`;if(selected.index!==lastSelected){lastSelected=selected.index;onSegment(selected)}}
  }
  async function metadataFor(segments,signal){
   const keys=[...new Set(segments.filter(s=>s.type==='video'||s.type==='chunkedVideo').map(s=>s.src))],result=new Map();let index=0;
@@ -237,11 +227,11 @@ function createProductionProjectPreview(root,{onSegment=()=>{},fetchInfo}={}){
    coarse.disabled=current.disabled=playButton.disabled=false;reconcile();return !fatal;
   }catch(error){if(enabled&&epoch===token)fail(error.message);return false}
  }
- function seek(time,resume=false){if(!plan||fatal)return;pause();position=T.clamp(Number(time)||0,0,plan.duration);wanted=resume;reconcile()}
+ function seek(time,resume=false){if(!plan||fatal)return;onNavigate();pause();position=T.clamp(Number(time)||0,0,plan.duration);wanted=resume;reconcile()}
  async function play(){
   if(!enabled||!plan||fatal)return;
   if(wanted){pause();return}
-  const token=epoch;wanted=true;update();
+  onNavigate();const token=epoch;wanted=true;update();
   try{
    if(!context){const Context=window.AudioContext||window.webkitAudioContext;if(!Context)throw Error('Web Audio is unavailable.');context=new Context();for(const item of pool.values())for(const node of item.media)graph(item,node)}
    await context.resume();if(!enabled||epoch!==token||!wanted)return;
@@ -249,8 +239,7 @@ function createProductionProjectPreview(root,{onSegment=()=>{},fetchInfo}={}){
   }catch(error){if(enabled&&epoch===token)fail(error.message)}
  }
  playButton.onclick=play;
- current.onchange=()=>{try{seek(T.timestamp(current.value))}catch(error){status.textContent=error.message;current.value=T.timecode(position)}};
- current.onkeydown=event=>{if(event.key==='Enter'){event.preventDefault();current.blur()}else if(event.key==='Escape'){event.preventDefault();current.value=T.timecode(clock());current.blur()}};
+ bindProductionPlayerTimestamp(current,()=>{try{seek(T.timestamp(current.value))}catch(error){status.textContent=error.message;current.value=T.timecode(position)}},()=>{current.value=T.timecode(clock())});
  coarse.onpointerdown=event=>{if(!plan||fatal||event.button>0)return;coarse.setPointerCapture(event.pointerId);coarseDrag={id:event.pointerId,start:clock(),resume:wanted};pause()};
  coarse.oninput=()=>seek(+coarse.value,coarseDrag?false:wanted);
  function endCoarse(event,cancel=false){if(!coarseDrag||event?.pointerId!==undefined&&event.pointerId!==coarseDrag.id)return;const drag=coarseDrag;coarseDrag=null;seek(cancel?drag.start:+coarse.value,drag.resume)}
@@ -259,9 +248,10 @@ function createProductionProjectPreview(root,{onSegment=()=>{},fetchInfo}={}){
  fine.onpointermove=event=>{if(!fineDrag||event.pointerId!==fineDrag.id)return;const delta=event.clientX-fineDrag.x;fineDrag.moved=fineDrag.moved||Math.abs(delta)>3;seek(fineDrag.start-delta/fine.getBoundingClientRect().width*5000)};
  function endFine(event,cancel=false){if(!fineDrag||event.pointerId!==fineDrag.id)return;const drag=fineDrag;fineDrag=null;if(cancel||!drag.moved)seek(drag.start,drag.resume);else reconcile()}
  fine.onpointerup=endFine;fine.onpointercancel=event=>endFine(event,true);
- fine.onkeydown=event=>{if(!plan||fatal)return;const delta=event.key==='ArrowLeft'?-100:event.key==='ArrowRight'?100:0;if(delta){event.preventDefault();seek(clock()+delta)}};
+
  if(window.ResizeObserver)new ResizeObserver(()=>drawFine(clock())).observe(fine);
- return {open,close,pause,seek,play,position:clock,selection:()=>plan?T.selection(plan,clock()):null,ready:()=>!!plan&&!fatal&&status.textContent==='',plan:()=>plan,playing:()=>wanted};
+ root.querySelector('.media-preview-in')?.setAttribute('disabled','');root.querySelector('.media-preview-out')?.setAttribute('disabled','');
+ return {open,close,pause,seek,play,togglePlay:play,seekBy:(delta,resume=false)=>seek(clock()+delta,resume),position:clock,selection:()=>plan?T.selection(plan,clock()):null,ready:()=>!!plan&&!fatal&&status.textContent==='',plan:()=>plan,playing:()=>wanted};
 }
 </script>
 {{end}}

@@ -160,7 +160,7 @@ func TestProductionRendersGenerateAndEdit(t *testing.T) {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	for _, want := range []string{"A Great Talk", "Back to renders", "Render settings", `id="live-preview-mode"`, `id="edit-mode"`, `data-project-preview`, "+ Add segment", "Choose media", "Duplicate", "Delete", ">Save</button>"} {
+	for _, want := range []string{"A Great Talk", "Back to renders", "Render settings", `id="live-preview-mode"`, `role="switch"`, `data-project-preview`, "+ Add segment", "Choose media", "Duplicate", "Delete", ">Save</button>"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("render editor omitted %q: %s", want, body)
 		}
@@ -258,5 +258,63 @@ func TestProductionRenderCreateUsesEditableDefaultName(t *testing.T) {
 	h.productionRenderEdit(response, httptest.NewRequest(http.MethodGet, productionRenderURL("toronto", items[0].ID)+"&created=1", nil))
 	if !strings.Contains(response.Body.String(), "newItemName.select()") {
 		t.Fatalf("new render name was not selected: %s", response.Body.String())
+	}
+}
+
+func TestImportedTalkMetadataPersistsAndIsRemovedFromWorkerManifest(t *testing.T) {
+	recipe := []json.RawMessage{
+		json.RawMessage(`{"type":"image","src":"berlin26/sponsor.png"}`),
+		json.RawMessage(`{"type":"streamctl.talkCard"}`),
+		json.RawMessage(`{"type":"streamctl.talkCuts"}`),
+	}
+	segments, err := expandProductionTemplate(recipe, "berlin26", "talk", "berlin26/talks/card.png", []db.ProductionCut{{SourceType: "video", Source: "berlin26/main.mp4", InMS: 1000, OutMS: 9000}}, "Imported title")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(segments[0]), "streamctl") {
+		t.Fatal("static segment got a talk title")
+	}
+	for _, segment := range segments[1:] {
+		if !strings.Contains(string(segment), `"talkTitle":"Imported title"`) {
+			t.Fatal("missing imported title")
+		}
+	}
+	// Editing media and trims leaves provenance attached; duplicate segments retain it.
+	segments[2] = json.RawMessage(strings.ReplaceAll(strings.ReplaceAll(string(segments[2]), "main.mp4", "edited.mp4"), "00:00:01.000", "00:00:02.000"))
+	segments = append(segments, append(json.RawMessage(nil), segments[2]...))
+	saved, err := productionRenderManifestJSON("Test", nil, segments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	editor, err := productionRenderEditorDefinition(saved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(editor)
+	if _, err := validateProductionRenderEditor(raw); err != nil {
+		t.Fatal(err)
+	}
+	worker, err := productionWorkerManifest(saved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(worker, "streamctl") || strings.Contains(worker, "talkTitle") {
+		t.Fatal("worker received editor metadata")
+	}
+	if !strings.Contains(worker, "edited.mp4") || !strings.Contains(worker, "00:00:02.000") {
+		t.Fatal("worker lost edited content")
+	}
+	view := productionRenderListItem{ProductionRender: db.ProductionRender{Name: "Test", JSON: strings.ReplaceAll(saved, "Imported title", "Renamed title")}}
+	decorateProductionRender(&view, db.ProductionRenderQueueState{Latest: &db.RenderJobQueueItem{Name: "Test", ManifestJSON: worker, Status: "finished"}})
+	if view.Edited || !view.CanQueue {
+		t.Fatalf("display metadata invalidated worker snapshot: %+v", view)
+	}
+	if _, err := productionWorkerManifest(strings.Replace(saved, `"talkTitle": "Imported title"`, `"talkTitle": 12`, 1)); err == nil {
+		t.Fatal("accepted invalid title type")
+	}
+	// Legacy manifests remain valid and unlabeled.
+	legacy, err := productionWorkerManifest(worker)
+	if err != nil || legacy != worker {
+		t.Fatalf("legacy round trip: %v", err)
 	}
 }

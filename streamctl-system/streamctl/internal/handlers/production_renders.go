@@ -282,7 +282,8 @@ func (h *Handler) productionRendersQueue(w http.ResponseWriter, r *http.Request)
 			http.Error(w, fmt.Sprintf("render %d was not found", id), http.StatusBadRequest)
 			return
 		}
-		if err := validateRenderManifest([]byte(item.JSON)); err != nil {
+		workerJSON, err := productionWorkerManifest(item.JSON)
+		if err != nil {
 			http.Error(w, fmt.Sprintf("%s is not ready: %v", item.Name, err), http.StatusBadRequest)
 			return
 		}
@@ -290,6 +291,7 @@ func (h *Handler) productionRendersQueue(w http.ResponseWriter, r *http.Request)
 			http.Error(w, fmt.Sprintf("%s is already queued or running", item.Name), http.StatusConflict)
 			return
 		}
+		item.JSON = workerJSON
 		items = append(items, item)
 	}
 	queued := 0
@@ -357,7 +359,7 @@ func (h *Handler) productionRenderGenerate(w http.ResponseWriter, r *http.Reques
 			skipped++
 			continue
 		}
-		segments, err := expandProductionTemplate(*definition.Segments, conference, talk.TalkID, talk.SocialCard, talkCuts)
+		segments, err := expandProductionTemplate(*definition.Segments, conference, talk.TalkID, talk.SocialCard, talkCuts, talk.Title)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("generate %s: %v", talk.Title, err), http.StatusBadRequest)
 			return
@@ -424,7 +426,11 @@ func productionRenderManifestJSON(name string, settings json.RawMessage, segment
 	return string(encoded), err
 }
 
-func expandProductionTemplate(source []json.RawMessage, conference, talkID, socialCard string, cuts []db.ProductionCut) ([]json.RawMessage, error) {
+func expandProductionTemplate(source []json.RawMessage, conference, talkID, socialCard string, cuts []db.ProductionCut, titles ...string) ([]json.RawMessage, error) {
+	title := ""
+	if len(titles) > 0 {
+		title = titles[0]
+	}
 	var result []json.RawMessage
 	for _, raw := range source {
 		var header struct {
@@ -443,6 +449,9 @@ func expandProductionTemplate(source []json.RawMessage, conference, talkID, soci
 				segment := map[string]any{"type": cut.SourceType, "src": cut.Source, "in": formatProductionTimecode(cut.InMS), "out": formatProductionTimecode(cut.OutMS)}
 				if dynamic.Overlay != nil {
 					segment["overlay"] = *dynamic.Overlay
+				}
+				if title != "" {
+					segment["streamctl"] = productionSegmentMetadata{TalkTitle: title}
 				}
 				encoded, _ := json.Marshal(segment)
 				result = append(result, encoded)
@@ -475,6 +484,9 @@ func expandProductionTemplate(source []json.RawMessage, conference, talkID, soci
 			segment := map[string]any{"type": "image", "src": card}
 			if dynamic.DurationMS != nil {
 				segment["durationMs"] = *dynamic.DurationMS
+			}
+			if title != "" {
+				segment["streamctl"] = productionSegmentMetadata{TalkTitle: title}
 			}
 			encoded, _ := json.Marshal(segment)
 			result = append(result, encoded)
@@ -549,7 +561,8 @@ func selectedProductionIDs(r *http.Request) ([]int64, error) {
 func decorateProductionRender(view *productionRenderListItem, state db.ProductionRenderQueueState) {
 	view.Edited = false
 	view.HasFinished = false
-	view.CanQueue = validateRenderManifest([]byte(view.JSON)) == nil
+	workerJSON, workerErr := productionWorkerManifest(view.JSON)
+	view.CanQueue = workerErr == nil
 	if state.Latest == nil {
 		view.Status, view.StatusLabel, view.BadgeClass = "draft", "Draft", "badge-inactive"
 		if !view.CanQueue {
@@ -558,7 +571,8 @@ func decorateProductionRender(view *productionRenderListItem, state db.Productio
 		return
 	}
 	view.HasFinished = state.HasFinished
-	view.Edited = view.JSON != state.Latest.ManifestJSON || view.Name != state.Latest.Name
+	latestJSON, latestErr := productionWorkerManifest(state.Latest.ManifestJSON)
+	view.Edited = workerErr != nil || latestErr != nil || workerJSON != latestJSON || view.Name != state.Latest.Name
 	active := state.Latest.Status == "queued" || state.Latest.Status == "running"
 	view.CanQueue = view.CanQueue && !active
 	if active {
@@ -592,4 +606,44 @@ func decorateProductionRender(view *productionRenderListItem, state db.Productio
 	default:
 		view.BadgeClass = "badge-inactive"
 	}
+}
+
+// productionWorkerManifest removes editor-only provenance at the worker boundary.
+// Validate the original segments first so unknown fields cannot be hidden by stripping.
+func productionWorkerManifest(raw string) (string, error) {
+	editor, err := productionRenderEditorDefinition(raw)
+	if err != nil {
+		return "", err
+	}
+	for _, segment := range *editor.Segments {
+		if err := validateProductionTemplateSegment(segment); err != nil {
+			return "", err
+		}
+	}
+	var manifest productionRenderManifest
+	if err := decodeStrictJSON([]byte(raw), &manifest); err != nil {
+		return "", err
+	}
+	for j := range manifest.Jobs {
+		for i, segment := range manifest.Jobs[j].Segments {
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(segment, &fields); err != nil {
+				return "", err
+			}
+			delete(fields, "streamctl")
+			encoded, err := json.Marshal(fields)
+			if err != nil {
+				return "", err
+			}
+			manifest.Jobs[j].Segments[i] = encoded
+		}
+	}
+	encoded, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	if err := validateRenderManifest(encoded); err != nil {
+		return "", err
+	}
+	return string(encoded), nil
 }

@@ -82,22 +82,28 @@ type productionTemplateAudio struct {
 	SourceGainDB *float64 `json:"sourceGainDb"`
 }
 
+type productionSegmentMetadata struct {
+	TalkTitle string `json:"talkTitle"`
+}
+
 type productionTemplateImageSegment struct {
-	Type       string                   `json:"type"`
-	Src        string                   `json:"src"`
-	DurationMS *int                     `json:"durationMs"`
-	Overlay    *string                  `json:"overlay"`
-	Audio      *productionTemplateAudio `json:"audio"`
+	Streamctl  *productionSegmentMetadata `json:"streamctl,omitempty"`
+	Type       string                     `json:"type"`
+	Src        string                     `json:"src"`
+	DurationMS *int                       `json:"durationMs"`
+	Overlay    *string                    `json:"overlay"`
+	Audio      *productionTemplateAudio   `json:"audio"`
 }
 
 type productionTemplateVideoSegment struct {
-	Type       string                   `json:"type"`
-	Src        string                   `json:"src"`
-	In         *string                  `json:"in"`
-	Out        *string                  `json:"out"`
-	Transcribe *bool                    `json:"transcribe"`
-	Overlay    *string                  `json:"overlay"`
-	Audio      *productionTemplateAudio `json:"audio"`
+	Streamctl  *productionSegmentMetadata `json:"streamctl,omitempty"`
+	Type       string                     `json:"type"`
+	Src        string                     `json:"src"`
+	In         *string                    `json:"in"`
+	Out        *string                    `json:"out"`
+	Transcribe *bool                      `json:"transcribe"`
+	Overlay    *string                    `json:"overlay"`
+	Audio      *productionTemplateAudio   `json:"audio"`
 }
 
 type productionTemplateTalkCutsSegment struct {
