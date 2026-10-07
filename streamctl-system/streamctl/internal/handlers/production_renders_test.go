@@ -160,7 +160,7 @@ func TestProductionRendersGenerateAndEdit(t *testing.T) {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	for _, want := range []string{"A Great Talk", "Back to renders", "Render settings", "+ Add segment", "Choose media", "Duplicate", "Delete", ">Save</button>"} {
+	for _, want := range []string{"A Great Talk", "Back to renders", "Render settings", `id="live-preview-mode"`, `id="edit-mode"`, `data-project-preview`, "+ Add segment", "Choose media", "Duplicate", "Delete", ">Save</button>"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("render editor omitted %q: %s", want, body)
 		}

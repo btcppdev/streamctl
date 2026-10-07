@@ -1,0 +1,267 @@
+{{define "productionProjectPreview"}}
+<style>
+.project-preview[hidden],.segment-preview[hidden]{display:none}.preview-modes{display:flex;gap:8px;margin-bottom:10px}.preview-modes [aria-pressed=true]{border-color:var(--accent);color:var(--accent)}.project-preview{border:1px solid var(--border);border-radius:7px;overflow:hidden;background:var(--panel)}.project-frame{position:relative;aspect-ratio:16/9;background:#000;overflow:hidden}.project-stage,.project-layer,.project-layer video,.project-layer img{position:absolute;inset:0;width:100%;height:100%}.project-layer{background:#000}.project-layer video,.project-layer img{object-fit:contain}.project-overlay{pointer-events:none}.project-controls{padding:12px}.project-coarse{width:100%;touch-action:none}.project-meta{display:flex;align-items:center;gap:10px;margin:9px 0;color:var(--muted);font:11px ui-monospace,monospace}.project-current{min-width:0;width:14ch;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:3px;padding:4px;font:inherit}.project-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.project-status{margin-top:8px;color:var(--muted);font-size:12px}.project-status:empty{display:none}.project-fine{position:relative;height:58px;background:var(--bg);border:1px solid var(--border);touch-action:none;cursor:ew-resize;overflow:hidden}.project-fine canvas{width:100%;height:100%;display:block}.project-fine::after{content:'';position:absolute;left:50%;top:0;bottom:0;width:2px;background:var(--accent)}.project-help{margin:8px 0 0;color:var(--muted);font-size:11px}
+</style>
+<div class="project-preview" data-project-preview hidden>
+ <div class="project-frame"><div class="project-stage"></div></div>
+ <div class="project-controls">
+  <input class="project-coarse" type="range" min="0" max="0" step="1" value="0" aria-label="Project timeline" disabled>
+  <div class="project-meta"><button type="button" class="btn project-play" aria-label="Play project" disabled>▶</button><input class="project-current" aria-label="Project timestamp" value="00:00:00.000" spellcheck="false" disabled><span class="project-label"></span><span class="project-duration">00:00:00.000</span></div>
+  <div class="project-fine" tabindex="0" role="slider" aria-label="Fine project timeline" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0"><canvas></canvas></div>
+  <div class="project-status" role="status"></div>
+  <p class="project-help">Preview mode locks editing. Switch to Edit to adjust the current segment.</p>
+ </div>
+</div>
+<script>
+// Separate from the source player: all coordinates here are output/project time.
+const ProductionProjectTimeline = (() => {
+ const clamp=(value,min,max)=>Math.max(min,Math.min(max,value));
+ function timestamp(value, fallback=0){
+  if(value===undefined||value===null||value==='')return fallback;
+  const match=String(value).trim().match(/^(?:(\d+):)?(\d{1,2}):(\d{1,2})(?:\.(\d{1,3}))?$/);
+  if(!match||+match[2]>59||+match[3]>59)throw Error('Use a timestamp like 00:12:34.500.');
+  return (+match[1]||0)*3600000+(+match[2])*60000+(+match[3])*1000+ +(match[4]||'0').padEnd(3,'0');
+ }
+ function timecode(ms){ms=Math.max(0,Math.round(ms||0));return [Math.floor(ms/3600000),Math.floor(ms%3600000/60000),Math.floor(ms%60000/1000)].map(x=>String(x).padStart(2,'0')).join(':')+'.'+String(ms%1000).padStart(3,'0')}
+ function build(segments,settings={},metadata=new Map()){
+  if(!segments.length)throw Error('Add a segment before previewing this project.');
+  const transition=Number(settings.transitionMs??1000),width=Number(settings.width??1920),height=Number(settings.height??1080);
+  if(!Number.isFinite(transition)||transition<=0||!Number.isInteger(transition))throw Error('Transition must be a positive number of milliseconds.');
+  if(!Number.isInteger(width)||width<=0||!Number.isInteger(height)||height<=0)throw Error('Render dimensions must be positive whole numbers.');
+  let cursor=0;
+  const entries=segments.map((segment,index)=>{
+   try{
+    if(!['video','chunkedVideo','image'].includes(segment.type))throw Error('This segment must be resolved before previewing.');
+    if(!segment.src)throw Error('Choose a source.');
+    const info=metadata.get(segment.src),image=segment.type==='image',sourceIn=image?0:timestamp(segment.in),sourceOut=image?Number(segment.durationMs??settings.imageMs??4000):timestamp(segment.out,info?.durationMs);
+    if(!image&&(!info?.proxyPath||!Number.isFinite(info.durationMs)||info.durationMs<=0))throw Error(info?.warning||'Prepare the editing proxy before previewing.');
+    const duration=sourceOut-sourceIn;
+    if(!Number.isFinite(duration)||duration<=0||!Number.isInteger(duration))throw Error('The segment needs a valid positive duration.');
+    if(!image&&(sourceIn>=info.durationMs||sourceOut>info.durationMs))throw Error('The cut is outside the source duration.');
+    if(segments.length>1&&duration<transition)throw Error('Segment duration must be at least the transition duration.');
+    let audio=null;
+    if(segment.audio){
+     if(!segment.audio.src)throw Error('Choose an external audio source.');
+     audio={...segment.audio,mode:segment.audio.mode||'replace',inMs:timestamp(segment.audio.in),gainDb:Number(segment.audio.gainDb??0),sourceGainDb:Number(segment.audio.sourceGainDb??0)};
+     if(!['replace','mix'].includes(audio.mode)||!Number.isFinite(audio.gainDb)||!Number.isFinite(audio.sourceGainDb))throw Error('External audio settings are invalid.');
+     if(audio.mode!=='mix'&&audio.sourceGainDb!==0)throw Error('Source gain requires mix mode.');
+    }
+    const entry={...segment,audio,index,sourceIn,sourceOut,duration,start:cursor,end:cursor+duration,proxyPath:info?.proxyPath};
+    cursor=entry.end-(index<segments.length-1?transition:0);return entry;
+   }catch(error){throw Error(`Segment ${index+1}: ${error.message}`)}
+  });
+  return {entries,transition,width,height,duration:cursor};
+ }
+ function state(plan,time){
+  time=clamp(time,0,plan.duration);const weights=plan.entries.map(()=>0);weights[0]=1;
+  for(let i=1;i<plan.entries.length;i++){
+   const progress=clamp((time-plan.entries[i].start)/plan.transition,0,1);
+   if(!progress)continue;
+   for(let j=0;j<i;j++)weights[j]*=1-progress;
+   weights[i]=progress;
+  }
+  const active=plan.entries.filter(e=>time>=e.start&&(time<e.end||time===plan.duration&&e.index===plan.entries.length-1));
+  // At a join the incoming layer is required even at zero weight, so it is ready
+  // before the clock advances into the dissolve.
+  const fadeMs=Math.min(1000,plan.duration),fade=clamp(time/fadeMs,0,1)*clamp((plan.duration-time)/fadeMs,0,1);
+  const dominant=active.reduce((best,e)=>!best||weights[e.index]>=weights[best.index]?e:best,null);
+  return {time,active,weights,fade,dominant};
+ }
+ function fromSource(plan,index,sourceMs){const e=plan.entries[index]||plan.entries[0];return e.start+clamp((Number(sourceMs)||0)-e.sourceIn,0,e.duration)}
+ function selection(plan,time){const s=state(plan,time),e=s.dominant;return e?{index:e.index,sourceMs:e.sourceIn+clamp(s.time-e.start,0,e.duration),projectMs:s.time}:null}
+ return {build,state,fromSource,selection,timestamp,timecode,clamp};
+})();
+
+function createProductionProjectPreview(root,{onSegment=()=>{},fetchInfo}={}){
+ const T=ProductionProjectTimeline,stage=root.querySelector('.project-stage'),frame=root.querySelector('.project-frame'),coarse=root.querySelector('.project-coarse'),fine=root.querySelector('.project-fine'),canvas=fine.querySelector('canvas'),playButton=root.querySelector('.project-play'),current=root.querySelector('.project-current'),label=root.querySelector('.project-label'),durationLabel=root.querySelector('.project-duration'),status=root.querySelector('.project-status');
+ const cache=new Map(),pool=new Map(),session=`project-${Date.now().toString(36)}`;
+ let plan=null,enabled=false,epoch=0,controller=null,context=null,position=0,anchor=0,running=false,wanted=false,raf=0,fineDrag=null,coarseDrag=null,reconciling=false,lastSelected=-1,fatal=false;
+ const objectURL=key=>'/production/media/open?'+new URLSearchParams({conference:key.split('/')[0],path:key,session,stream:'1'});
+ const clock=()=>running?Math.min(plan.duration,position+(context.currentTime-anchor)*1000):position;
+ function pauseMedia(){for(const item of pool.values())for(const node of item.media)node.pause()}
+ function freeze(){position=clock();running=false;pauseMedia()}
+ function cancelFrame(){if(raf)cancelAnimationFrame(raf);raf=0}
+ function requestFrame(){if(enabled&&!raf)raf=requestAnimationFrame(()=>{raf=0;reconcile()})}
+ function pause(){freeze();wanted=false;cancelFrame();update();return position}
+ function fail(message){freeze();wanted=false;fatal=true;status.textContent=message;cancelFrame();update()}
+ function hold(message){freeze();status.textContent=message;update();if(wanted)requestFrame()}
+ function release(item){
+  item.alive=false;
+  for(const node of item.media){node.pause();node.removeAttribute('src');node.load()}
+  for(const graph of item.graphs){graph.source.disconnect();graph.gain.disconnect()}
+  item.layer.remove();
+ }
+ function clearPool(){for(const item of pool.values())release(item);pool.clear()}
+ function close(){pause();enabled=false;fineDrag=coarseDrag=null;epoch++;controller?.abort();controller=null;clearPool();plan=null;fatal=false;lastSelected=-1}
+ function graph(item,node){
+  if(!context||item.graphs.some(g=>g.node===node))return;
+  const source=context.createMediaElementSource(node),gain=context.createGain();gain.gain.value=0;source.connect(gain);gain.connect(context.destination);item.graphs.push({node,source,gain});
+ }
+ function makeMedia(item,tag,key){
+  const node=document.createElement(tag);node.preload='auto';node.playsInline=true;node.hidden=tag==='audio';item.layer.appendChild(node);item.media.push(node);graph(item,node);
+  const alive=()=>enabled&&item.alive&&pool.get(item.entry.index)===item;
+  const ready=()=>{if(alive()){node.projectWaiting=false;reconcile()}};
+  node.onloadedmetadata=node.oncanplay=ready;node.onseeked=()=>{node.projectSettledTarget=node.projectTarget;ready()};
+  node.onwaiting=()=>{if(alive()){node.projectWaiting=true;reconcile()}};
+  node.onerror=()=>{if(alive()){item.error=`Could not load ${tag==='audio'?'external audio':'the editing proxy'}. Return to Edit and retry.`;reconcile()}};
+  node.src=objectURL(key);node.load();return node;
+ }
+ function makeImage(item,key,overlay=false){
+  const node=document.createElement('img');node.alt='';if(overlay)node.className='project-overlay';item.layer.appendChild(node);item.images.push(node);
+  const alive=()=>enabled&&item.alive&&pool.get(item.entry.index)===item;
+  node.onload=()=>{if(alive()){node.projectReady=true;reconcile()}};
+  node.onerror=()=>{if(alive()){item.error=`Could not load ${overlay?'the overlay':'the image card'}.`;reconcile()}};
+  node.src=objectURL(key);return node;
+ }
+ function instance(entry){
+  if(pool.has(entry.index))return pool.get(entry.index);
+  const layer=document.createElement('div');layer.className='project-layer';layer.dataset.segment=String(entry.index);layer.style.opacity='0';stage.appendChild(layer);
+  const item={entry,layer,alive:true,media:[],images:[],graphs:[],error:''};pool.set(entry.index,item);
+  if(entry.type==='image')item.image=makeImage(item,entry.src);else item.video=makeMedia(item,'video',entry.proxyPath);
+  if(entry.overlay)makeImage(item,entry.overlay,true);
+  if(entry.audio)item.audio=makeMedia(item,'audio',entry.audio.src);
+  return item;
+ }
+ function align(node,seconds){
+  if(node.error||node.readyState===0||node.seeking)return false;
+  const difference=Math.abs(node.currentTime-seconds),adjusted=node.projectSettledTarget===seconds&&difference<=.08;
+  if(difference>(running?.08:.005)&&!adjusted){node.pause();node.projectTarget=seconds;node.currentTime=seconds;return false}
+  return node.readyState>=2&&!node.projectWaiting;
+ }
+ function audioAvailable(item,time){
+  if(!item.audio)return false;
+  const target=(time-item.entry.start+item.entry.audio.inMs)/1000;
+  return target>=0&&(!Number.isFinite(item.audio.duration)||target<item.audio.duration);
+ }
+ function prepare(item,time){
+  if(item.error)throw Error(`Segment ${item.entry.index+1}: ${item.error}`);
+  let ready=item.images.every(node=>node.projectReady);
+  const elapsed=T.clamp(time-item.entry.start,0,item.entry.duration);
+  if(item.video)ready=align(item.video,(item.entry.sourceIn+elapsed)/1000)&&ready;
+  if(item.audio){
+   if(item.audio.readyState===0)return false;
+   if(Number.isFinite(item.audio.duration)&&item.entry.audio.inMs>=item.audio.duration*1000)throw Error(`Segment ${item.entry.index+1}: Audio in is outside the audio duration.`);
+   if(audioAvailable(item,time))ready=align(item.audio,(item.entry.audio.inMs+elapsed)/1000)&&ready;
+   else item.audio.pause();
+  }
+  return ready;
+ }
+ function volume(item,node,time){
+  const state=T.state(plan,time),weight=state.weights[item.entry.index]*state.fade,audio=item.entry.audio;
+  if(node===item.audio)return audioAvailable(item,time)?weight*Math.pow(10,audio.gainDb/20):0;
+  return weight*(audio?(audio.mode==='replace'?0:Math.pow(10,audio.sourceGainDb/20)):1);
+ }
+ function gains(item,time){
+  if(!context)return;
+  for(const g of item.graphs){
+   const now=context.currentTime,value=volume(item,g.node,time);g.gain.gain.cancelScheduledValues(now);g.gain.gain.setValueAtTime(value,now);
+   if(running)g.gain.gain.linearRampToValueAtTime(volume(item,g.node,Math.min(plan.duration,time+50)),now+.05);
+  }
+ }
+ function startNode(item,node){
+  if(!node.paused||node.ended)return;
+  const token=epoch;
+  node.play().catch(error=>{if(enabled&&token===epoch&&item.alive&&error.name!=='AbortError')fail(`Segment ${item.entry.index+1}: Playback was blocked. Return to Edit and retry.`)});
+ }
+ function reconcile(){
+  if(!enabled||!plan||fatal||reconciling)return;
+  reconciling=true;
+  try{
+   const time=clock(),state=T.state(plan,time),required=new Set(state.active.map(e=>e.index));
+   const next=plan.entries.find(e=>e.start>time);if(next)required.add(next.index);
+   for(const [index,item] of pool)if(!required.has(index)){release(item);pool.delete(index)}
+   for(const index of required)instance(plan.entries[index]);
+   // Paint in manifest order even when a backwards seek reuses an instance.
+   const layers=[...required].sort((a,b)=>a-b).map(index=>pool.get(index).layer),existing=Array.from(stage.children);
+   if(layers.some((layer,index)=>existing[index]!==layer))for(const layer of layers)stage.appendChild(layer);
+   let ready=true;
+   for(const e of state.active)ready=prepare(pool.get(e.index),time)&&ready;
+   if(!ready){hold('Loading project position…');return}
+   if(next){const item=pool.get(next.index);if(!item.error)try{prepare(item,next.start)}catch(error){item.error=error.message}}
+   if(wanted&&time<plan.duration&&!fineDrag&&!coarseDrag){
+    if(!running){position=time;anchor=context.currentTime;running=true}
+    for(const e of state.active){const item=pool.get(e.index);if(item.video)startNode(item,item.video);if(audioAvailable(item,time))startNode(item,item.audio)}
+   }
+   if(time>=plan.duration){position=plan.duration;running=false;wanted=false;pauseMedia()}
+   status.textContent='';paint(state);update(time);
+   if(wanted)requestFrame();
+  }catch(error){fail(error.message)}finally{reconciling=false}
+ }
+ function paint(state){
+  let cumulative=0;
+  for(const e of state.active){
+   const weight=state.weights[e.index];cumulative+=weight;
+   const item=pool.get(e.index);item.layer.style.opacity=String(cumulative?weight/cumulative:0);gains(item,state.time);
+  }
+  for(const item of pool.values())if(!state.active.some(e=>e.index===item.entry.index)){item.layer.style.opacity='0';for(const node of item.media)node.pause();gains(item,state.time)}
+  stage.style.opacity=String(state.fade);
+ }
+ function drawFine(time){
+  const rect=fine.getBoundingClientRect();if(!rect.width||!plan)return;
+  const dpr=window.devicePixelRatio||1;canvas.width=Math.round(rect.width*dpr);canvas.height=Math.round(rect.height*dpr);
+  const ctx=canvas.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,rect.width,rect.height);ctx.font='10px ui-monospace,monospace';ctx.fillStyle='#8b95a7';ctx.strokeStyle='#8b95a7';
+  const start=time-2500,x=t=>(t-start)/5000*rect.width;
+  for(let t=Math.max(0,Math.ceil(start/100)*100);t<=Math.min(plan.duration,start+5000);t+=100){const major=t%1000===0;ctx.beginPath();ctx.moveTo(x(t),major?22:38);ctx.lineTo(x(t),58);ctx.stroke();if(major)ctx.fillText(T.timecode(t).slice(3,8),x(t)+2,14)}
+  ctx.strokeStyle='#6ea8fe';for(const e of plan.entries)if(e.start>=start&&e.start<=start+5000){ctx.beginPath();ctx.moveTo(x(e.start),0);ctx.lineTo(x(e.start),58);ctx.stroke()}
+ }
+ function update(time=clock()){
+  if(!plan)return;
+  coarse.value=time;if(document.activeElement!==current)current.value=T.timecode(time);durationLabel.textContent=T.timecode(plan.duration);
+  fine.setAttribute('aria-valuenow',String(Math.round(time)));fine.setAttribute('aria-valuetext',T.timecode(time));drawFine(time);
+  playButton.textContent=wanted?'❚❚':'▶';playButton.setAttribute('aria-label',wanted?'Pause project':'Play project');
+  const selected=T.selection(plan,time);if(selected){const e=plan.entries[selected.index];label.textContent=`${selected.index+1} / ${plan.entries.length} · ${e.src.split('/').pop()}`;if(selected.index!==lastSelected){lastSelected=selected.index;onSegment(selected)}}
+ }
+ async function metadataFor(segments,signal){
+  const keys=[...new Set(segments.filter(s=>s.type==='video'||s.type==='chunkedVideo').map(s=>s.src))],result=new Map();let index=0;
+  await Promise.all(Array.from({length:Math.min(3,keys.length)},async()=>{
+   while(index<keys.length){const key=keys[index++];if(signal.aborted)return;
+    try{
+     let info=cache.get(key);
+     if(!info){
+      if(fetchInfo)info=await fetchInfo(key,signal);
+      else{const response=await fetch('/production/media/info?'+new URLSearchParams({conference:key.split('/')[0],path:key}),{signal});if(!response.ok)throw Error(await response.text());info=await response.json()}
+      if(signal.aborted)return;
+      if(info.proxyPath&&info.durationMs>0)cache.set(key,info);
+     }
+     result.set(key,info);
+    }catch(error){cache.delete(key);if(signal.aborted)return;const segment=segments.findIndex(s=>s.src===key);throw Error(`Segment ${segment+1}: ${error.message}`)}
+   }
+  }));return result;
+ }
+ async function open(segments,settings={},at={}){
+  close();enabled=true;root.hidden=false;const token=epoch;controller=new AbortController();status.textContent='Preparing project timeline…';label.textContent='';coarse.disabled=current.disabled=playButton.disabled=true;
+  try{
+   const snapshot=structuredClone(segments),metadata=await metadataFor(snapshot,controller.signal);if(!enabled||epoch!==token)return false;
+   plan=T.build(snapshot,settings,metadata);frame.style.aspectRatio=`${plan.width} / ${plan.height}`;coarse.max=plan.duration;fine.setAttribute('aria-valuemax',String(plan.duration));
+   position=Number.isFinite(at.projectMs)?T.clamp(at.projectMs,0,plan.duration):T.fromSource(plan,at.index,at.sourceMs);
+   coarse.disabled=current.disabled=playButton.disabled=false;reconcile();return !fatal;
+  }catch(error){if(enabled&&epoch===token)fail(error.message);return false}
+ }
+ function seek(time,resume=false){if(!plan||fatal)return;pause();position=T.clamp(Number(time)||0,0,plan.duration);wanted=resume;reconcile()}
+ async function play(){
+  if(!enabled||!plan||fatal)return;
+  if(wanted){pause();return}
+  const token=epoch;wanted=true;update();
+  try{
+   if(!context){const Context=window.AudioContext||window.webkitAudioContext;if(!Context)throw Error('Web Audio is unavailable.');context=new Context();for(const item of pool.values())for(const node of item.media)graph(item,node)}
+   await context.resume();if(!enabled||epoch!==token||!wanted)return;
+   if(position>=plan.duration)position=0;wanted=true;reconcile();
+  }catch(error){if(enabled&&epoch===token)fail(error.message)}
+ }
+ playButton.onclick=play;
+ current.onchange=()=>{try{seek(T.timestamp(current.value))}catch(error){status.textContent=error.message;current.value=T.timecode(position)}};
+ current.onkeydown=event=>{if(event.key==='Enter'){event.preventDefault();current.blur()}else if(event.key==='Escape'){event.preventDefault();current.value=T.timecode(clock());current.blur()}};
+ coarse.onpointerdown=event=>{if(!plan||fatal||event.button>0)return;coarse.setPointerCapture(event.pointerId);coarseDrag={id:event.pointerId,start:clock(),resume:wanted};pause()};
+ coarse.oninput=()=>seek(+coarse.value,coarseDrag?false:wanted);
+ function endCoarse(event,cancel=false){if(!coarseDrag||event?.pointerId!==undefined&&event.pointerId!==coarseDrag.id)return;const drag=coarseDrag;coarseDrag=null;seek(cancel?drag.start:+coarse.value,drag.resume)}
+ coarse.onpointerup=endCoarse;coarse.onchange=()=>endCoarse();coarse.onpointercancel=event=>endCoarse(event,true);
+ fine.onpointerdown=event=>{if(!plan||fatal||event.button>0)return;event.preventDefault();fine.focus();fine.setPointerCapture(event.pointerId);fineDrag={id:event.pointerId,start:clock(),x:event.clientX,resume:wanted,moved:false};pause()};
+ fine.onpointermove=event=>{if(!fineDrag||event.pointerId!==fineDrag.id)return;const delta=event.clientX-fineDrag.x;fineDrag.moved=fineDrag.moved||Math.abs(delta)>3;seek(fineDrag.start-delta/fine.getBoundingClientRect().width*5000)};
+ function endFine(event,cancel=false){if(!fineDrag||event.pointerId!==fineDrag.id)return;const drag=fineDrag;fineDrag=null;if(cancel||!drag.moved)seek(drag.start,drag.resume);else reconcile()}
+ fine.onpointerup=endFine;fine.onpointercancel=event=>endFine(event,true);
+ fine.onkeydown=event=>{if(!plan||fatal)return;const delta=event.key==='ArrowLeft'?-100:event.key==='ArrowRight'?100:0;if(delta){event.preventDefault();seek(clock()+delta)}};
+ if(window.ResizeObserver)new ResizeObserver(()=>drawFine(clock())).observe(fine);
+ return {open,close,pause,seek,play,position:clock,selection:()=>plan?T.selection(plan,clock()):null,ready:()=>!!plan&&!fatal&&status.textContent==='',plan:()=>plan,playing:()=>wanted};
+}
+</script>
+{{end}}
