@@ -29,6 +29,7 @@ function player() {
     removeAttribute(key) { delete this.attributes[key]; }
     getBoundingClientRect() { return {width: 0, height: 62}; }
     focus() {}
+    blur() {}
     setPointerCapture() {}
     hasPointerCapture() { return false; }
     insertBefore() {}
@@ -316,4 +317,10 @@ test('video buffering pauses audio until video is ready', async () => {
   const p=await audioPlayer(); p.preview.togglePlay(); p.video.onwaiting();
   p.video.ontimeupdate(); assert.equal(p.audio.paused,true);
   p.video.canplay(); assert.equal(p.audio.paused,false);
+});
+
+test('timestamp Enter commits directly to the source engine and blocks saving',async()=>{
+ const p=player();await p.ready();const current=p.root.querySelector('[data-preview-current]');current.value='00:00:04.500';let prevented=false,stopped=false;
+ current.onkeydown({key:'Enter',preventDefault(){prevented=true},stopPropagation(){stopped=true}});
+ assert.equal(p.video.seeks.at(-1),4.5);assert.equal(prevented&&stopped,true);
 });

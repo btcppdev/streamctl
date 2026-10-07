@@ -3,7 +3,8 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const path=require('node:path');
 const vm=require('node:vm');
-const script=fs.readFileSync(path.join(__dirname,'../templates/production_project_preview.html'),'utf8').match(/<script>([\s\S]*?)<\/script>/)[1];
+const shared=fs.readFileSync(path.join(__dirname,'../templates/production_media_preview.html'),'utf8').match(/<script>([\s\S]*?)<\/script>/)[1].split('function createProductionMediaPreview')[0];
+const script=shared+fs.readFileSync(path.join(__dirname,'../templates/production_project_preview.html'),'utf8').match(/<script>([\s\S]*?)<\/script>/)[1];
 const pure={};vm.createContext(pure);vm.runInContext(script+';this.timeline=ProductionProjectTimeline;',pure);const T=pure.timeline;
 const image=(src='card.png',durationMs=4000)=>({type:'image',src,durationMs});
 const video=(src='main.mp4',extra={})=>({type:'video',src,...extra});
@@ -73,7 +74,7 @@ function player(fetchInfo=async()=>info()){
   createMediaElementSource(node){return {node,connect(){},disconnect(){}}}
   createGain(){const node={gain:{value:0,cancelScheduledValues(){},setValueAtTime(v){this.value=v},linearRampToValueAtTime(v){this.future=v}},connect(){},disconnect(){}};gains.push(node);return node}
  }
- const root=new Element(),sandbox={URLSearchParams,AbortController,structuredClone,window:{AudioContext,devicePixelRatio:1},document:{activeElement:null,createElement(tag){if(['video','audio'].includes(tag)){const n=new Media(tag);media.push(n);return n}const n=new Element(tag);if(tag==='img')images.push(n);return n}},requestAnimationFrame(fn){frames.set(++frameId,fn);return frameId},cancelAnimationFrame(id){frames.delete(id)}};
+ const root=new Element(),sandbox={URLSearchParams,AbortController,structuredClone,getComputedStyle(){return {getPropertyValue(){return ''}}},window:{AudioContext,devicePixelRatio:1},document:{activeElement:null,createElement(tag){if(['video','audio'].includes(tag)){const n=new Media(tag);media.push(n);return n}const n=new Element(tag);if(tag==='img')images.push(n);return n}},requestAnimationFrame(fn){frames.set(++frameId,fn);return frameId},cancelAnimationFrame(id){frames.delete(id)}};
  vm.createContext(sandbox);vm.runInContext(script,sandbox);const preview=sandbox.createProductionProjectPreview(root,{fetchInfo});
  return {preview,root,media,images,gains,contexts,
   async open(segments,settings={},at={}){return preview.open(segments,settings,at)},
@@ -122,18 +123,18 @@ test('pool stays bounded to active and next segments on distant seeks',async()=>
 });
 test('stale load events and metadata completions are ignored after close',async()=>{
  let resolve;const p=player(()=>new Promise(r=>resolve=r));const opened=p.open([video()]);p.preview.close();resolve(info());assert.equal(await opened,false);assert.equal(p.media.length,0);
- const q=player();await q.open([video()]);const old=q.media[0];q.preview.close();old.onerror();assert.equal(q.root.querySelector('.project-status').textContent,'Loading project position…');
+ const q=player();await q.open([video()]);const old=q.media[0];q.preview.close();old.onerror();assert.equal(q.root.querySelector('.media-preview-status').textContent,'Loading project position…');
 });
 test('asset errors and invalid external audio in are explicit and stop playback',async()=>{
- const p=player();await p.open([image()]);p.images[0].onerror();assert.match(p.root.querySelector('.project-status').textContent,/Segment 1:.*image/);assert.equal(p.preview.playing(),false);
- const q=player();await q.open([video('a.mp4',{audio:{src:'music.mp3',in:'00:06:00'}})]);q.ready();assert.match(q.root.querySelector('.project-status').textContent,/Audio in is outside/);
+ const p=player();await p.open([image()]);p.images[0].onerror();assert.match(p.root.querySelector('.media-preview-status').textContent,/Segment 1:.*image/);assert.equal(p.preview.playing(),false);
+ const q=player();await q.open([video('a.mp4',{audio:{src:'music.mp3',in:'00:06:00'}})]);q.ready();assert.match(q.root.querySelector('.media-preview-status').textContent,/Audio in is outside/);
 });
 test('end of project pauses everything and replay starts from zero',async()=>{
  const p=player();await p.open([video('a.mp4',{out:'00:00:02'})]);p.ready();await p.preview.play();p.tick(2000);assert.equal(p.preview.playing(),false);assert.equal(p.preview.position(),2000);
  await p.preview.play();p.ready();assert.equal(p.preview.position(),0);assert.equal(p.preview.playing(),true);
 });
 test('fine dragging stays paused, coarse dragging resumes only prior playback',async()=>{
- const p=player();await p.open([video()]);p.ready();await p.preview.play();const fine=p.root.querySelector('.project-fine'),coarse=p.root.querySelector('.project-coarse'),event={pointerId:1,clientX:100,button:0,preventDefault(){}};
+ const p=player();await p.open([video()]);p.ready();await p.preview.play();const fine=p.root.querySelector('.media-preview-fine'),coarse=p.root.querySelector('.media-preview-seek'),event={pointerId:1,clientX:100,button:0,preventDefault(){}};
  fine.getBoundingClientRect=()=>({width:1000,height:58});fine.onpointerdown(event);fine.onpointermove({...event,clientX:0});fine.onpointerup(event);p.ready();assert.equal(p.preview.playing(),false);
  await p.preview.play();coarse.onpointerdown(event);coarse.value=2000;coarse.oninput();coarse.onpointerup(event);p.ready();assert.equal(p.preview.playing(),true);
 });
@@ -143,11 +144,12 @@ test('short projects multiply overlapping opening and closing fades like FFmpeg'
 });
 function editor(segments){
  const controls=[{disabled:false,closest(){return false}},{disabled:true,closest(){return false}},{disabled:false,closest(){return true}}];
- const cards=segments.map(()=>({draggable:true,classList:{toggle(){},add(){}}}));const roots=new Map();const element=key=>{if(!roots.has(key))roots.set(key,{hidden:false,setAttribute(){}});return roots.get(key)};
+ function classes(){const values=new Set();return {toggle(){},add(v){values.add(v)},remove(v){values.delete(v)},contains(v){return values.has(v)}}}
+ const cards=segments.map(()=>({draggable:true,classList:classes(),querySelector(){return {setAttribute(){}}}}));const roots=new Map();const element=key=>{if(!roots.has(key))roots.set(key,{hidden:false,setAttribute(){}});return roots.get(key)};
  let sourceMs=0,editPlaying=false,projectPosition=0,projectPlan=null;const opens=[];
  const preview={currentTime:()=>sourceMs,ready:()=>true,playing:()=>editPlaying,togglePlay:()=>editPlaying=false};
- const project={async open(segments,settings,at){projectPlan=plan(segments,settings);projectPosition=Number.isFinite(at.projectMs)?at.projectMs:T.fromSource(projectPlan,at.index,at.sourceMs);opens.push(at)},pause(){},close(){},selection(){return projectPlan?T.selection(projectPlan,projectPosition):null}};
- const sandbox={editorKind:'render',selectedIndex:0,segments,settings:{},preview,segmentList:{children:cards},document:{querySelector:element,getElementById:element,querySelectorAll(selector){return selector==='.segment-card'?cards:controls}},createProductionProjectPreview:()=>project,previewSelected(ms){sourceMs=ms??0}};
+ const project={async open(segments,settings,at){projectPlan=plan(segments,settings);projectPosition=Number.isFinite(at.projectMs)?at.projectMs:T.fromSource(projectPlan,at.index,at.sourceMs);opens.push(at)},pause(){},close(){},plan:()=>projectPlan,seek(ms){projectPosition=ms},selection(){return projectPlan?T.selection(projectPlan,projectPosition):null}};
+ const sandbox={editorKind:'render',selectedIndex:0,segments,settings:{},preview,segmentList:{children:cards,classList:classes()},document:{querySelector:element,getElementById:element,querySelectorAll(selector){return selector==='.segment-card'?cards:controls}},createProductionProjectPreview:()=>project,previewSelected(ms){sourceMs=ms??0}};
  vm.createContext(sandbox);const template=fs.readFileSync(path.join(__dirname,'../templates/production_template_edit.html'),'utf8');const helper=template.slice(template.indexOf("let previewMode='edit'"),template.indexOf('function basename'));
  vm.runInContext(helper,sandbox);
  return {sandbox,controls,cards,opens,setSource(ms){sourceMs=ms},setProject(ms){projectPosition=ms},setPlaying(){editPlaying=true},isEditPlaying:()=>editPlaying,mode:mode=>sandbox.setPreviewMode(mode),source:()=>sourceMs};
@@ -179,4 +181,19 @@ test('ended media does not restart at zero just before its project boundary',asy
 test('fine paused seeks request small movements and accept rounded media clocks',async()=>{
  const p=player();await p.open([video()]);p.ready();p.preview.seek(20);assert.equal(p.media[0].seeks.at(-1),.02);p.media[0].settled(0);assert.equal(p.preview.ready(),true);assert.equal(p.media[0].seeks.length,1);
  p.preview.seek(40);assert.equal(p.media[0].seeks.at(-1),.04);p.media[0].settled();assert.equal(p.preview.position(),40);
+});
+
+test('preview collapses all rows, restores expanded rows, and pins a paused list jump',async()=>{
+ const e=editor([image('a.png',3000),video('b.mp4',{in:'00:00:01',out:'00:00:05'})]);
+ e.cards[0].classList.add('open');e.cards[1].classList.add('open');await e.mode('project');assert.equal(e.cards.some(c=>c.classList.contains('open')),false);
+ e.sandbox.selectProjectSegment(1);await e.mode('edit');assert.equal(e.sandbox.selectedIndex,1);assert.equal(e.source(),1000);assert.equal(e.cards.every(c=>c.classList.contains('open')),true);
+ await e.mode('project');assert.equal(e.opens.at(-1).projectMs,2000);
+});
+test('project label uses imported title after source and trim changes',async()=>{
+ const p=player();await p.open([video('edited.mp4',{in:'00:00:01',streamctl:{talkTitle:'Original imported talk'}})]);p.ready();assert.match(p.root.querySelector('.media-preview-source-name').textContent,/Original imported talk/);
+});
+
+test('timestamp Enter commits directly to the project engine while staying paused',async()=>{
+ const p=player();await p.open([video()]);p.ready();const current=p.root.querySelector('.media-preview-current');current.value='00:00:04.500';
+ current.onkeydown({key:'Enter',preventDefault(){},stopPropagation(){}});p.ready();assert.equal(p.preview.position(),4500);assert.equal(p.preview.playing(),false);
 });
