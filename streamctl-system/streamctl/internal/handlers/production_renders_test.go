@@ -318,3 +318,38 @@ func TestImportedTalkMetadataPersistsAndIsRemovedFromWorkerManifest(t *testing.T
 		t.Fatalf("legacy round trip: %v", err)
 	}
 }
+
+func TestImportedTalkSchedulePreservesEventOffset(t *testing.T) {
+	start, end := "2026-10-01T11:30:00+02:00", "2026-10-01T12:00:00+02:00"
+	label := productionTalkSchedule(&start, &end)
+	if label != "Oct 1 · 11:30–12:00 UTC+02:00" {
+		t.Fatal(label)
+	}
+	cuts := []db.ProductionCut{{Source: "berlin26/recordings/talk.mp4", SourceType: "video", InMS: 1000, OutMS: 5000}}
+	segments, err := expandProductionTemplate([]json.RawMessage{json.RawMessage(`{"type":"streamctl.talkCuts"}`)}, "berlin26", "talk", "", cuts, "Talk", label)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var segment productionTemplateVideoSegment
+	if err := json.Unmarshal(segments[0], &segment); err != nil {
+		t.Fatal(err)
+	}
+	if segment.Streamctl == nil || segment.Streamctl.TalkSchedule != label {
+		t.Fatalf("schedule missing: %s", segments[0])
+	}
+	manifest, err := productionRenderManifestJSON("Talk", json.RawMessage(`{}`), segments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, err := productionWorkerManifest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(worker, "talkSchedule") {
+		t.Fatal("schedule sent to worker")
+	}
+	invalid := "bad"
+	if productionTalkSchedule(&invalid, &end) != "" || productionTalkSchedule(nil, nil) != "" {
+		t.Fatal("invented missing time")
+	}
+}

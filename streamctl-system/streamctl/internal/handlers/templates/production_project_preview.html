@@ -199,7 +199,7 @@ function createProductionProjectPreview(root,{onSegment=()=>{},onNavigate=()=>{}
   coarse.value=time;coarse.style.setProperty?.('--seek-progress',`${time/plan.duration*100}%`);if(document.activeElement!==current)current.value=T.timecode(time);durationLabel.textContent=T.timecode(plan.duration);
   fine.setAttribute('aria-valuenow',String(Math.round(time)));fine.setAttribute('aria-valuetext',T.timecode(time));drawFine(time);
   (playButton.querySelector('span')||playButton).textContent=wanted?'❚❚':'▶';playButton.setAttribute('aria-label',wanted?'Pause project':'Play project');
-  const selected=T.selection(plan,time);if(selected){const e=plan.entries[selected.index];label.textContent=`${selected.index+1} / ${plan.entries.length} · ${e.streamctl?.talkTitle||e.src.split('/').pop()}`;if(selected.index!==lastSelected){lastSelected=selected.index;onSegment(selected)}}
+  const selected=T.selection(plan,time);if(selected){const e=plan.entries[selected.index];label.textContent=`${selected.index+1} / ${plan.entries.length} · ${e.streamctl?.talkTitle||e.src.split('/').pop()}${e.streamctl?.talkSchedule?' · '+e.streamctl.talkSchedule:''}`;if(selected.index!==lastSelected){lastSelected=selected.index;onSegment(selected)}}
  }
  async function metadataFor(segments,signal){
   const keys=[...new Set(segments.filter(s=>s.type==='video'||s.type==='chunkedVideo').map(s=>s.src))],result=new Map();let index=0;

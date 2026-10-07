@@ -190,7 +190,7 @@ test('preview collapses all rows, restores expanded rows, and pins a paused list
  await e.mode('project');assert.equal(e.opens.at(-1).projectMs,2000);
 });
 test('project label uses imported title after source and trim changes',async()=>{
- const p=player();await p.open([video('edited.mp4',{in:'00:00:01',streamctl:{talkTitle:'Original imported talk'}})]);p.ready();assert.match(p.root.querySelector('.media-preview-source-name').textContent,/Original imported talk/);
+ const p=player();await p.open([video('edited.mp4',{in:'00:00:01',streamctl:{talkTitle:'Original imported talk',talkSchedule:'Oct 1 · 11:30–12:00 CEST'}})]);p.ready();assert.match(p.root.querySelector('.media-preview-source-name').textContent,/Original imported talk/);assert.match(p.root.querySelector('.media-preview-source-name').textContent,/11:30–12:00 CEST/);
 });
 
 test('timestamp Enter commits directly to the project engine while staying paused',async()=>{

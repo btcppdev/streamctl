@@ -138,7 +138,7 @@ func assembleLivestream(talks []productionTalkView, cuts map[string][]db.Product
 		if len(cuts[talk.TalkID]) == 0 {
 			reasons = append(reasons, "No saved cuts")
 		}
-		expanded, err := expandProductionTemplate(recipe, conference, talk.TalkID, talk.SocialCard, cuts[talk.TalkID], talk.Title)
+		expanded, err := expandProductionTemplate(recipe, conference, talk.TalkID, talk.SocialCard, cuts[talk.TalkID], talk.Title, productionTalkSchedule(talk.StartsAt, talk.EndsAt))
 		if err != nil {
 			reasons = append(reasons, "Missing or invalid saved title card")
 		}

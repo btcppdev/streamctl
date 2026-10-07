@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"streamctl/internal/db"
 )
@@ -359,7 +360,7 @@ func (h *Handler) productionRenderGenerate(w http.ResponseWriter, r *http.Reques
 			skipped++
 			continue
 		}
-		segments, err := expandProductionTemplate(*definition.Segments, conference, talk.TalkID, talk.SocialCard, talkCuts, talk.Title)
+		segments, err := expandProductionTemplate(*definition.Segments, conference, talk.TalkID, talk.SocialCard, talkCuts, talk.Title, productionTalkSchedule(talk.StartsAt, talk.EndsAt))
 		if err != nil {
 			http.Error(w, fmt.Sprintf("generate %s: %v", talk.Title, err), http.StatusBadRequest)
 			return
@@ -431,6 +432,10 @@ func expandProductionTemplate(source []json.RawMessage, conference, talkID, soci
 	if len(titles) > 0 {
 		title = titles[0]
 	}
+	schedule := ""
+	if len(titles) > 1 {
+		schedule = titles[1]
+	}
 	var result []json.RawMessage
 	for _, raw := range source {
 		var header struct {
@@ -451,7 +456,7 @@ func expandProductionTemplate(source []json.RawMessage, conference, talkID, soci
 					segment["overlay"] = *dynamic.Overlay
 				}
 				if title != "" {
-					segment["streamctl"] = productionSegmentMetadata{TalkTitle: title}
+					segment["streamctl"] = productionSegmentMetadata{TalkTitle: title, TalkSchedule: schedule}
 				}
 				encoded, _ := json.Marshal(segment)
 				result = append(result, encoded)
@@ -486,7 +491,7 @@ func expandProductionTemplate(source []json.RawMessage, conference, talkID, soci
 				segment["durationMs"] = *dynamic.DurationMS
 			}
 			if title != "" {
-				segment["streamctl"] = productionSegmentMetadata{TalkTitle: title}
+				segment["streamctl"] = productionSegmentMetadata{TalkTitle: title, TalkSchedule: schedule}
 			}
 			encoded, _ := json.Marshal(segment)
 			result = append(result, encoded)
@@ -646,4 +651,23 @@ func productionWorkerManifest(raw string) (string, error) {
 		return "", err
 	}
 	return string(encoded), nil
+}
+
+// Preserve the schedule's event offset, independent of the editor's local timezone.
+func productionTalkSchedule(startsAt, endsAt *string) string {
+	if startsAt == nil {
+		return ""
+	}
+	start, err := time.Parse(time.RFC3339, *startsAt)
+	if err != nil {
+		return ""
+	}
+	label := start.Format("Jan 2 · 15:04")
+	if endsAt != nil {
+		end, err := time.Parse(time.RFC3339, *endsAt)
+		if err == nil && end.After(start) {
+			label += "–" + end.In(start.Location()).Format("15:04")
+		}
+	}
+	return label + " UTC" + start.Format("-07:00")
 }
