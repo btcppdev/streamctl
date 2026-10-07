@@ -143,6 +143,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/production/templates/delete-selected", h.mutation(http.HandlerFunc(h.productionTemplatesDelete)))
 	mux.Handle("/production/renders", h.auth(http.HandlerFunc(h.productionRenders)))
 	mux.Handle("/production/renders/edit", h.auth(http.HandlerFunc(h.productionRenderEdit)))
+	mux.Handle("/production/renders/livestream-options", h.auth(http.HandlerFunc(h.productionLivestreamOptions)))
+	mux.Handle("/production/renders/create-livestream", h.mutation(http.HandlerFunc(h.productionRenderCreateLivestream)))
 	mux.Handle("/production/renders/create", h.mutation(http.HandlerFunc(h.productionRenderCreate)))
 	mux.Handle("/production/renders/save", h.mutation(http.HandlerFunc(h.productionRenderSave)))
 	mux.Handle("/production/renders/duplicate", h.mutation(http.HandlerFunc(h.productionRenderDuplicate)))
