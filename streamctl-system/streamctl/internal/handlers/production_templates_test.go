@@ -102,6 +102,9 @@ func TestProductionTemplatesListAndEditor(t *testing.T) {
 			t.Fatalf("template editor omitted %q: %s", want, response.Body.String())
 		}
 	}
+	if strings.Contains(response.Body.String(), `id="live-preview-mode"`) || strings.Contains(response.Body.String(), `<div class="project-preview"`) {
+		t.Fatal("template editor exposed the render-only project player")
+	}
 	if strings.Contains(response.Body.String(), "template-preview-actions") {
 		t.Fatalf("template editor retained controls outside the shared preview card: %s", response.Body.String())
 	}
