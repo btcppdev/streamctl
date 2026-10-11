@@ -1924,7 +1924,7 @@ func (h *Handler) ensureRunPodWorker(ctx context.Context, gpuType string) error 
 			"git clone " + shellQuote(confRenderRepository) + " /root/conf-render",
 			"git -C /root/conf-render checkout " + shellQuote(confRenderRevision),
 			confRenderCompatibilityCommand(),
-			"/root/.local/bin/uv sync --frozen --directory /root/conf-render",
+			"/root/.local/bin/uv sync --frozen --python 3.12 --directory /root/conf-render",
 			"timeout --kill-after=30s 180s /root/render-from-spaces.py --check",
 			"touch /root/.streamctl-worker-ready",
 		}, " && "))},
@@ -2157,7 +2157,7 @@ curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/root/.local/bin
 git clone %s /root/conf-render
 git -C /root/conf-render checkout %s
 %s
-/root/.local/bin/uv sync --frozen --directory /root/conf-render
+/root/.local/bin/uv sync --frozen --python 3.12 --directory /root/conf-render
 timeout --kill-after=30s 180s /root/render-from-spaces.py --check
 echo "$DROPLET_ID" >/root/droplet-id
 touch /root/.streamctl-worker-ready
