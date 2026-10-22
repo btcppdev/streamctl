@@ -42,3 +42,13 @@ When separating existing resources, back up state and use `terraform state mv`
 to transfer ownership before planning either project. Verify resource IDs and
 plans; removing declarations without moving state can schedule deletions. Do
 not commit Terraform state, plans, credentials, or private host settings here.
+
+## October 2026 security baseline
+
+The committed Nix lock uses nixpkgs `da6dc0e7b26060f2f71ce3ef7088fb56ee44fa36`.
+Deployment explicitly builds the Go service with Go 1.27.3 and selects nginx
+1.30.6 stable. This includes the [nginx security fixes](https://nginx.org/en/security_advisories.html)
+and the Go certificate-validation update; the pinned NixOS trust store also
+removes the compromised eMudhra roots. Rebuild and deploy the entire NixOS
+configuration to update both the application binary and host trust store.
+Updating source or restarting the old binary alone does not apply these fixes.

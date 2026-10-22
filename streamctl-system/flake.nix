@@ -9,7 +9,7 @@
   outputs = { self, nixpkgs, flake-utils }:
     let
       # The streamctl Go package, parameterized by pkgs so it works on any system.
-      streamctlPackage = pkgs: pkgs.buildGoModule {
+      streamctlPackage = pkgs: pkgs.buildGo127Module {
         pname = "streamctl";
         version = "0.1.0";
         src = ./streamctl;
@@ -430,7 +430,7 @@
 
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [
-            go
+            go_1_27
             git
             gopls
             sqlite

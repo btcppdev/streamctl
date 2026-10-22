@@ -83,6 +83,8 @@
   # Make sure the A/AAAA records point at the droplet's IP.
 
   services.nginx = {
+    # October 2026 security fixes; keep the stable branch explicitly selected.
+    package = pkgs.nginxStable;
     enable = true;
     recommendedProxySettings = true;
     recommendedTlsSettings = true;
