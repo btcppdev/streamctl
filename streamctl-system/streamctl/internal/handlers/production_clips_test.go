@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"html/template"
 	"net/http/httptest"
 	"net/url"
@@ -99,5 +100,53 @@ func TestClipWorkerCompilationMatchesLegacyAndRejectsInvalidProvenance(t *testin
 	definition, _ := json.Marshal(productionTemplateDefinition{Version: 1, Settings: json.RawMessage(`{}`), Segments: &segments})
 	if _, err := validateProductionRenderEditor(definition); err != nil {
 		t.Fatalf("blank draft: %v", err)
+	}
+}
+
+func TestTemplateOptionsKeepStaticTemplatesAvailableWithoutTalks(t *testing.T) {
+	database := productionHandlerTestDB(t)
+	id, err := database.CreateProductionTemplate("berlin26", "Sponsors", `{"version":1,"settings":{},"segments":[{"type":"image","src":"berlin26/sponsors.png"}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &Handler{DB: database, BTCPP: productionCandidatesStub{err: errors.New("website unavailable")}}
+	w := httptest.NewRecorder()
+	h.productionTemplateOptions(w, httptest.NewRequest("GET", "/production/renders/template-options?conference=berlin26", nil))
+	var result struct {
+		Templates []struct {
+			ID        int64 `json:"id"`
+			NeedsTalk bool  `json:"needsTalk"`
+		} `json:"templates"`
+		Talks      []productionTalkView `json:"talks"`
+		TalksError string               `json:"talksError"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if w.Code != 200 || result.TalksError == "" || result.Talks == nil || len(result.Talks) != 0 {
+		t.Fatalf("options unavailable: %d %s", w.Code, w.Body)
+	}
+	found := false
+	for _, option := range result.Templates {
+		if option.ID == id && !option.NeedsTalk {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("static template missing: %s", w.Body)
+	}
+	for _, templateID := range []int64{id, 0} {
+		form := url.Values{"conference": {"berlin26"}, "template_id": {strconv.FormatInt(templateID, 10)}}
+		r := httptest.NewRequest("POST", "/production/renders/expand-template", strings.NewReader(form.Encode()))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		w := httptest.NewRecorder()
+		h.productionExpandTemplate(w, r)
+		want := 200
+		if templateID == 0 {
+			want = 400
+		}
+		if w.Code != want {
+			t.Fatalf("template %d: %d %s", templateID, w.Code, w.Body)
+		}
 	}
 }
