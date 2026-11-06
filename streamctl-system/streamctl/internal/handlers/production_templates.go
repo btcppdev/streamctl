@@ -35,21 +35,23 @@ type productionTemplatesPage struct {
 }
 
 type productionTemplateEditPage struct {
-	Nav             productionNavView
-	ItemID          int64
-	Conference      string
-	Name            string
-	DefinitionJSON  template.JS
-	Kind            string
-	BackURL         string
-	SaveAction      string
-	DuplicateAction string
-	DeleteAction    string
-	AllowDynamic    bool
-	CanDelete       bool
-	Saved           bool
-	SelectName      bool
-	Error           string
+	RecordingNotices     []productionRecordingNotice
+	RecordingTalkNotices map[string]productionRecordingNotice
+	Nav                  productionNavView
+	ItemID               int64
+	Conference           string
+	Name                 string
+	DefinitionJSON       template.JS
+	Kind                 string
+	BackURL              string
+	SaveAction           string
+	DuplicateAction      string
+	DeleteAction         string
+	AllowDynamic         bool
+	CanDelete            bool
+	Saved                bool
+	SelectName           bool
+	Error                string
 }
 
 type productionTemplateDefinition struct {

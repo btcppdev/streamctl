@@ -12,9 +12,10 @@ import (
 const ClipType = "streamctl.clip"
 
 type Talk struct {
-	ID       string `json:"id"`
-	Title    string `json:"title"`
-	Schedule string `json:"schedule,omitempty"`
+	RecordingPolicy string `json:"recordingPolicy,omitempty"`
+	ID              string `json:"id"`
+	Title           string `json:"title"`
+	Schedule        string `json:"schedule,omitempty"`
 }
 type Template struct {
 	ID     int64             `json:"id"`

@@ -48,13 +48,14 @@ type productionHomePage struct {
 
 type productionTalkView struct {
 	btcppclient.Candidate
-	Cuts       []db.ProductionCut `json:"cuts"`
-	CutCount   int                `json:"-"`
-	URL        string             `json:"-"`
-	DayLabel   string             `json:"dayLabel"`
-	StageLabel string             `json:"stageLabel"`
-	DateLabel  string             `json:"dateLabel"`
-	TimeLabel  string             `json:"timeLabel"`
+	RecordingNotice productionRecordingNotice `json:"recordingNotice"`
+	Cuts            []db.ProductionCut        `json:"cuts"`
+	CutCount        int                       `json:"-"`
+	URL             string                    `json:"-"`
+	DayLabel        string                    `json:"dayLabel"`
+	StageLabel      string                    `json:"stageLabel"`
+	DateLabel       string                    `json:"dateLabel"`
+	TimeLabel       string                    `json:"timeLabel"`
 }
 
 type productionTalksPage struct {
@@ -351,6 +352,7 @@ func (h *Handler) productionTalks(ctx context.Context, conference string) ([]pro
 	talks := make([]productionTalkView, len(candidates))
 	for i, candidate := range candidates {
 		talks[i].Candidate = candidate
+		talks[i].RecordingNotice = talkRecordingNotice(talks[i])
 	}
 	return talks, nil
 }
