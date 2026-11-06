@@ -84,11 +84,13 @@ func (h *Handler) productionTemplateOptions(w http.ResponseWriter, r *http.Reque
 		}
 	}
 	talks, err := h.productionTalks(r.Context(), conference)
+	response := map[string]any{"templates": options, "talks": talks}
 	if err != nil {
-		livestreamResponse(w, 502, map[string]string{"error": err.Error()})
-		return
+		// Static templates remain usable when the website schedule is unavailable.
+		response["talks"] = []productionTalkView{}
+		response["talksError"] = "Talks could not be loaded. Close and reopen this dialog to retry."
 	}
-	livestreamResponse(w, 200, map[string]any{"templates": options, "talks": talks})
+	livestreamResponse(w, 200, response)
 }
 func (h *Handler) productionExpandTemplate(w http.ResponseWriter, r *http.Request) {
 	fail := func(err error) { livestreamResponse(w, 400, map[string]string{"error": err.Error()}) }
