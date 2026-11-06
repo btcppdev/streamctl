@@ -3700,6 +3700,13 @@ func (h *Handler) renderStatus(w http.ResponseWriter, r *http.Request, status in
 		return
 	}
 	funcs := maps.Clone(h.funcs)
+	funcs["recordingPolicyCatalog"] = func() map[string]productionRecordingNotice {
+		catalog := map[string]productionRecordingNotice{}
+		for _, policy := range []string{"full", "record", "audio_only", "prohibited", ""} {
+			catalog[policy] = recordingPolicyNotice(policy)
+		}
+		return catalog
+	}
 	funcs["csrfField"] = func() template.HTML { return csrfField(r) }
 	funcs["currentUser"] = func() string {
 		if principal := requestAuthentication(r); principal != nil {
@@ -3707,7 +3714,7 @@ func (h *Handler) renderStatus(w http.ResponseWriter, r *http.Request, status in
 		}
 		return ""
 	}
-	tmpl, err := template.New("").Funcs(funcs).ParseFS(tmpls, "layout.html", "production_media_browser.html", "production_media_preview.html", "production_project_preview.html", "production_clip_editor.html", "broadcast_picker.html", name)
+	tmpl, err := template.New("").Funcs(funcs).ParseFS(tmpls, "layout.html", "production_media_browser.html", "production_media_preview.html", "production_project_preview.html", "production_clip_editor.html", "production_recording_policy.html", "broadcast_picker.html", name)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

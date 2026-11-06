@@ -19,17 +19,18 @@ import (
 
 type productionRenderListItem struct {
 	db.ProductionRender
-	SegmentCount    int
-	UpdatedLabel    string
-	URL             string
-	Status          string
-	StatusLabel     string
-	BadgeClass      string
-	CanQueue        bool
-	Edited          bool
-	HasFinished     bool
-	RecordingStatus string
-	RecordingError  string
+	SegmentCount     int
+	UpdatedLabel     string
+	URL              string
+	Status           string
+	StatusLabel      string
+	BadgeClass       string
+	CanQueue         bool
+	Edited           bool
+	HasFinished      bool
+	RecordingStatus  string
+	RecordingError   string
+	RecordingNotices []productionRecordingNotice
 }
 
 type productionRendersPage struct {
@@ -73,6 +74,7 @@ func (h *Handler) productionRenders(w http.ResponseWriter, r *http.Request) {
 		h.renderStatus(w, r, http.StatusBadRequest, "production_renders.html", page)
 		return
 	}
+	recordingTalks := h.productionRecordingTalks(r, conference)
 	items, err := h.DB.ListProductionRenders(conference)
 	if err != nil {
 		page.Error = err.Error()
@@ -92,6 +94,7 @@ func (h *Handler) productionRenders(w http.ResponseWriter, r *http.Request) {
 				ProductionRender: item, SegmentCount: count,
 				UpdatedLabel: item.UpdatedAt.Format("2006-01-02 15:04"), URL: productionRenderURL(conference, item.ID),
 			}
+			view.RecordingNotices = renderRecordingNotices(item, recordingTalks)
 			decorateProductionRender(&view, states[item.ID])
 			if latest := states[item.ID].Latest; latest != nil && latest.Status == "finished" {
 				view.RecordingStatus, view.RecordingError, err = h.DB.RecordingRegistrationStatus(latest.ID)
@@ -150,6 +153,24 @@ func (h *Handler) productionRenderEdit(w http.ResponseWriter, r *http.Request) {
 		BackURL:    "/production/renders?conference=" + url.QueryEscape(conference),
 		SaveAction: "/production/renders/save", DuplicateAction: "/production/renders/duplicate", DeleteAction: "/production/renders/delete",
 		Saved: r.URL.Query().Get("saved") == "1", SelectName: r.URL.Query().Get("created") == "1", Error: conferenceError,
+	}
+	recordingTalks := h.productionRecordingTalks(r, conference)
+	page.RecordingNotices = renderRecordingNotices(item, recordingTalks)
+	page.RecordingTalkNotices = map[string]productionRecordingNotice{}
+	for id, talk := range recordingTalks {
+		page.RecordingTalkNotices[id] = talkRecordingNotice(talk)
+	}
+	for _, raw := range *editor.Segments {
+		if renderdraft.IsClip(raw) {
+			clip, err := renderdraft.DecodeClip(raw)
+			if err == nil && clip.Talk != nil {
+				if _, ok := page.RecordingTalkNotices[clip.Talk.ID]; !ok {
+					notice := recordingPolicyNotice("")
+					notice.Title = clip.Talk.Title
+					page.RecordingTalkNotices[clip.Talk.ID] = notice
+				}
+			}
+		}
 	}
 	page.CanDelete = true
 	h.render(w, r, "production_template_edit.html", page)

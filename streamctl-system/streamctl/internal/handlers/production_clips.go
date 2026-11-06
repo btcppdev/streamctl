@@ -41,7 +41,7 @@ func makeProductionClip(name string, templateID int64, recipe []json.RawMessage,
 	clip := renderdraft.Clip{Type: renderdraft.ClipType, Name: name, Segments: children, Template: &renderdraft.Template{ID: templateID, Name: name, Recipe: recipe}}
 	if talk != nil {
 		clip.Name = talk.Title
-		clip.Talk = &renderdraft.Talk{ID: talk.TalkID, Title: talk.Title, Schedule: productionTalkSchedule(talk.StartsAt, talk.EndsAt)}
+		clip.Talk = &renderdraft.Talk{ID: talk.TalkID, Title: talk.Title, RecordingPolicy: talk.RecordingPolicy, Schedule: productionTalkSchedule(talk.StartsAt, talk.EndsAt)}
 	}
 	return clip
 }
