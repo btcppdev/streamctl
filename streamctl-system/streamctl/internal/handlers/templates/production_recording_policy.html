@@ -1,15 +1,28 @@
 {{define "productionRecordingNotice"}}
+{{if or (eq .Level "limited") (eq .Level "prohibited")}}
 <div class="recording-policy recording-policy-{{.Level}}"><strong>{{if .Title}}{{.Title}} · {{end}}{{.Label}}</strong><span>{{.Detail}}</span></div>
+{{end}}
+{{end}}
+{{define "productionRecordingTag"}}
+{{if eq .Level "limited"}}<span class="recording-policy-tag recording-policy-tag-limited" title="{{.Detail}}">Slides only</span>{{else if eq .Level "prohibited"}}<span class="recording-policy-tag recording-policy-tag-prohibited" title="{{.Detail}}">Do not record</span>{{end}}
+{{end}}
+{{define "productionRecordingTags"}}
+{{$limited := false}}{{$prohibited := false}}
+{{range .}}{{if eq .Level "limited"}}{{$limited = true}}{{else if eq .Level "prohibited"}}{{$prohibited = true}}{{end}}{{end}}
+{{if or $limited $prohibited}}<span class="recording-policy-tags">{{if $limited}}<span class="recording-policy-tag recording-policy-tag-limited">Slides only</span>{{end}}{{if $prohibited}}<span class="recording-policy-tag recording-policy-tag-prohibited">Do not record</span>{{end}}</span>{{end}}
 {{end}}
 {{define "productionRecordingPolicyUI"}}
 <style>
-.recording-policy{display:block;margin:8px 0;padding:9px 12px;border:1px solid var(--border);border-left-width:4px;border-radius:5px;font-size:12px;white-space:normal;overflow-wrap:anywhere}.recording-policy strong,.recording-policy span{display:block}.recording-policy span{margin-top:3px}.recording-policy-allowed{border-left-color:var(--success);background:rgba(85,217,139,.07)}.recording-policy-limited,.recording-policy-unknown{border-color:var(--warn);background:rgba(255,193,7,.10)}.recording-policy-prohibited{border-color:#ff6b70;background:rgba(255,107,112,.14)}.recording-policy-prohibited strong{color:#ff8b90}.recording-policy[hidden]{display:none}
+.recording-policy{display:block;margin:8px 0;padding:9px 12px;border:1px solid var(--border);border-left-width:4px;border-radius:5px;font-size:12px;white-space:normal;overflow-wrap:anywhere}.recording-policy strong,.recording-policy span{display:block}.recording-policy span{margin-top:3px}.recording-policy-limited{border-color:#f5a442;background:rgba(245,164,66,.10)}.recording-policy-prohibited{border-color:#ff6b70;background:rgba(255,107,112,.14)}.recording-policy-prohibited strong{color:#ff8b90}.recording-policy[hidden]{display:none}
+.recording-policy-tags,.production-list-row .recording-policy-tags{display:inline-flex;gap:5px;white-space:nowrap}.recording-policy-tag,.production-list-row .recording-policy-tag{display:inline-block;margin:3px 5px 0 0;padding:1px 6px;border-radius:4px;font-size:11px;font-weight:600;line-height:1.5;white-space:nowrap}.recording-policy-tag.recording-policy-tag-limited{color:#f5a442;background:rgba(245,164,66,.12)}.recording-policy-tag.recording-policy-tag-prohibited{color:#ff6b70;background:rgba(255,107,112,.12)}
 </style>
 <script>
 const productionRecordingPolicies={{recordingPolicyCatalog}};
 function showProductionRecordingNotice(node,notice){
- node.className='recording-policy recording-policy-'+notice.level;
  node.replaceChildren();
+ node.hidden=!notice||!['limited','prohibited'].includes(notice.level);
+ if(node.hidden)return;
+ node.className='recording-policy recording-policy-'+notice.level;
  const label=document.createElement('strong'),detail=document.createElement('span');
  label.textContent=(notice.title?notice.title+' · ':'')+notice.label;detail.textContent=notice.detail;
  node.append(label,detail);

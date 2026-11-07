@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"html"
@@ -66,7 +67,7 @@ func TestRecordingPreferencesAppearInCutterListAndRenderEditor(t *testing.T) {
 	cutPath = "/production/timestamp/cut?conference=berlin26&talk_id=prohibited"
 	check(cutPath, func(w *httptest.ResponseRecorder) { h.productionCut(w, httptest.NewRequest("GET", cutPath, nil)) }, "Private panel · Grace, Lin · Do not record</strong>")
 	listPath := "/production/renders?conference=berlin26"
-	check(listPath, func(w *httptest.ResponseRecorder) { h.productionRenders(w, httptest.NewRequest("GET", listPath, nil)) }, "Private panel · Grace, Lin · Do not record</strong>")
+	check(listPath, func(w *httptest.ResponseRecorder) { h.productionRenders(w, httptest.NewRequest("GET", listPath, nil)) }, ">Do not record</span>")
 	editPath := "/production/renders/edit?conference=berlin26&id=" + strconv.FormatInt(id, 10)
 	check(editPath, func(w *httptest.ResponseRecorder) {
 		h.productionRenderEdit(w, httptest.NewRequest("GET", editPath, nil))
@@ -78,9 +79,11 @@ func TestRecordingPreferencesAppearInCutterListAndRenderEditor(t *testing.T) {
 		t.Fatalf("current consent/deduplication: %+v", notices)
 	}
 	h.BTCPP = productionCandidatesStub{err: errors.New("offline")}
-	check(editPath, func(w *httptest.ResponseRecorder) {
-		h.productionRenderEdit(w, httptest.NewRequest("GET", editPath, nil))
-	}, "Old title · Recording preference unverified</strong>")
+	w := httptest.NewRecorder()
+	h.productionRenderEdit(w, httptest.NewRequest("GET", editPath, nil))
+	if w.Code != 200 || strings.Contains(w.Body.String(), `class="recording-policy recording-policy-`) {
+		t.Fatal("unverified preferences should not produce an editor banner")
+	}
 }
 
 func TestRecordingNoticesCoverLegacyAndUnlinkedFootage(t *testing.T) {
@@ -93,5 +96,40 @@ func TestRecordingNoticesCoverLegacyAndUnlinkedFootage(t *testing.T) {
 	notices = renderRecordingNotices(db.ProductionRender{JSON: manifest}, talks)
 	if len(notices) != 1 || notices[0].Title != "Unlinked footage" || notices[0].Level != "unknown" {
 		t.Fatalf("unlinked draft: %+v", notices)
+	}
+}
+
+func TestRecordingListTagsAreCompactAndOnlyShowRestrictions(t *testing.T) {
+	raw, err := templateFS.ReadFile("templates/production_recording_policy.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl, err := template.New("policies").Funcs(template.FuncMap{"recordingPolicyCatalog": func() any { return nil }}).Parse(string(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, policy := range []string{"full", "record", "", "new-policy"} {
+		for _, name := range []string{"productionRecordingTag", "productionRecordingNotice"} {
+			var out bytes.Buffer
+			if err := tmpl.ExecuteTemplate(&out, name, recordingPolicyNotice(policy)); err != nil {
+				t.Fatal(err)
+			}
+			if strings.TrimSpace(out.String()) != "" {
+				t.Fatalf("%s rendered for %q: %s", name, policy, &out)
+			}
+		}
+	}
+	var out bytes.Buffer
+	notices := []productionRecordingNotice{recordingPolicyNotice("audio_only"), recordingPolicyNotice("prohibited"), recordingPolicyNotice("audio_only"), recordingPolicyNotice("full"), recordingPolicyNotice("")}
+	if err := tmpl.ExecuteTemplate(&out, "productionRecordingTags", notices); err != nil {
+		t.Fatal(err)
+	}
+	for _, label := range []string{">Slides only</span>", ">Do not record</span>"} {
+		if strings.Count(out.String(), label) != 1 {
+			t.Fatalf("expected one compact %s tag: %s", label, &out)
+		}
+	}
+	if strings.Contains(out.String(), "<div") || strings.Contains(out.String(), "Exclude") || strings.Contains(out.String(), "Recording allowed") {
+		t.Fatalf("list tags contain banner text: %s", &out)
 	}
 }
