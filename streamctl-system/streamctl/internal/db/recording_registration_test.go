@@ -1,6 +1,9 @@
 package db
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestRecordingRegistrationMigration(t *testing.T) {
 	db := productionTestDB(t)
@@ -39,6 +42,9 @@ func TestRecordingRegistrationMigration(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM production_renders WHERE recording_kind = 'full_talk'`).Scan(&designated); err != nil || designated != 1 {
 		t.Fatalf("designation=%d error=%v", designated, err)
 	}
+	if err := db.UpdateProductionRender(fullTalkID, "toronto", "Talk", strings.Replace(manifest, `{"version":1`, `{"streamctl":{"registerRecording":true,"recordingTalkId":"talk-1"},"version":1`, 1)); err != nil {
+		t.Fatal(err)
+	}
 	job, err := db.EnqueueProductionRender(fullTalkID, "Talk", manifest)
 	if err != nil {
 		t.Fatal(err)
@@ -58,7 +64,7 @@ func TestRecordingRegistrationLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	manifest := `{"version":1,"jobs":[{"id":"talk","segments":[{"type":"video","src":"toronto/raw.mp4"}]}]}`
+	manifest := `{"streamctl":{"registerRecording":true,"recordingTalkId":"talk-1"},"version":1,"jobs":[{"id":"talk","segments":[{"type":"video","src":"toronto/raw.mp4"}]}]}`
 	renderID, _, err := db.CreateProductionRender("toronto", "Talk", manifest, &templateID, "talk-1", "full_talk")
 	if err != nil {
 		t.Fatal(err)
@@ -125,7 +131,8 @@ func TestRecordingRegistrationLifecycle(t *testing.T) {
 		t.Fatalf("status: %s %v", label, err)
 	}
 	// Association alone (e.g. a future clip) does not designate a full recording.
-	clipID, _, err := db.CreateProductionRender("toronto", "Clip", manifest, nil, "talk-1")
+	clipManifest := strings.Replace(manifest, `"registerRecording":true`, `"registerRecording":false`, 1)
+	clipID, _, err := db.CreateProductionRender("toronto", "Clip", clipManifest, nil, "talk-1")
 	if err != nil {
 		t.Fatal(err)
 	}

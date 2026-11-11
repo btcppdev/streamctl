@@ -52,7 +52,7 @@ func DecodeClip(raw json.RawMessage) (Clip, error) {
 	if clip.Talk != nil && (clip.Talk.ID == "" || clip.Talk.Title == "") {
 		return clip, fmt.Errorf("talk identity and title are required")
 	}
-	if clip.Template != nil && (clip.Template.ID < 0 || clip.Template.Name == "" || len(clip.Template.Recipe) == 0) {
+	if clip.Template != nil && (clip.Template.ID < -1 || clip.Template.Name == "" || len(clip.Template.Recipe) == 0) {
 		return clip, fmt.Errorf("template provenance is incomplete")
 	}
 	for _, child := range clip.Segments {

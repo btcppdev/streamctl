@@ -33,22 +33,29 @@ type productionRenderListItem struct {
 	RecordingNotices []productionRecordingNotice
 }
 
+type renderCreationDialog struct {
+	Prefix, Conference string
+	Batch              bool
+	Templates          []db.ProductionTemplate
+}
+
 type productionRendersPage struct {
-	Nav           productionNavView
-	Renders       []productionRenderListItem
-	Templates     []db.ProductionTemplate
-	TalkTemplates []db.ProductionTemplate
-	Generated     int
-	Skipped       int
-	Queued        int
-	Deleted       int
-	Error         string
+	CreationDialogs []renderCreationDialog
+	Nav             productionNavView
+	Renders         []productionRenderListItem
+	Templates       []db.ProductionTemplate
+	TalkTemplates   []db.ProductionTemplate
+	Generated       int
+	Queued          int
+	Deleted         int
+	Error           string
 }
 
 type productionRenderManifest struct {
-	Version  int                   `json:"version"`
-	Settings json.RawMessage       `json:"settings"`
-	Jobs     []productionRenderJob `json:"jobs"`
+	Streamctl *productionEditorMetadata `json:"streamctl,omitempty"`
+	Version   int                       `json:"version"`
+	Settings  json.RawMessage           `json:"settings"`
+	Jobs      []productionRenderJob     `json:"jobs"`
 }
 
 type productionRenderJob struct {
@@ -60,8 +67,8 @@ func (h *Handler) productionRenders(w http.ResponseWriter, r *http.Request) {
 	conference := selectedProductionConference(r)
 	rememberProductionConference(w, r, conference)
 	page := productionRendersPage{
-		Generated: queryInt(r, "generated"), Skipped: queryInt(r, "skipped"),
-		Queued: queryInt(r, "queued"), Deleted: queryInt(r, "deleted"),
+		Generated: queryInt(r, "generated"),
+		Queued:    queryInt(r, "queued"), Deleted: queryInt(r, "deleted"),
 	}
 	page.Nav = productionNavView{Active: "renders", Action: "/production/renders", Conference: conference}
 	page.Nav.Conferences, page.Error = h.productionConferences(r.Context())
@@ -114,6 +121,11 @@ func (h *Handler) productionRenders(w http.ResponseWriter, r *http.Request) {
 		if json.Unmarshal([]byte(item.JSON), &def) == nil && def.Segments != nil && recipeNeedsTalk(*def.Segments) {
 			page.TalkTemplates = append(page.TalkTemplates, item)
 		}
+	}
+
+	page.CreationDialogs = []renderCreationDialog{
+		{Prefix: "new-render", Conference: conference, Templates: page.TalkTemplates},
+		{Prefix: "batch-render", Conference: conference, Batch: true, Templates: page.TalkTemplates},
 	}
 
 	h.render(w, r, "production_renders.html", page)
@@ -176,28 +188,6 @@ func (h *Handler) productionRenderEdit(w http.ResponseWriter, r *http.Request) {
 	h.render(w, r, "production_template_edit.html", page)
 }
 
-func (h *Handler) productionRenderCreate(w http.ResponseWriter, r *http.Request) {
-	conference, name := strings.TrimSpace(r.FormValue("conference")), strings.TrimSpace(r.FormValue("name"))
-	if !validProductionConference(conference) {
-		http.Error(w, "conference is required", http.StatusBadRequest)
-		return
-	}
-	if name == "" {
-		name = "Untitled render"
-	}
-	manifest, err := productionRenderManifestJSON(name, json.RawMessage(`{}`), nil)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	id, _, err := h.DB.CreateProductionRender(conference, name, manifest, nil, "")
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	http.Redirect(w, r, productionRenderURL(conference, id)+"&created=1", http.StatusSeeOther)
-}
-
 func (h *Handler) productionRenderSave(w http.ResponseWriter, r *http.Request) {
 	conference, name := strings.TrimSpace(r.FormValue("conference")), strings.TrimSpace(r.FormValue("name"))
 	id, err := strconv.ParseInt(strings.TrimSpace(r.FormValue("id")), 10, 64)
@@ -210,7 +200,11 @@ func (h *Handler) productionRenderSave(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	manifest, err := productionRenderManifestJSON(name, definition.Settings, *definition.Segments)
+	if err := h.validateRecordingTarget(r, conference, definition.Streamctl); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	manifest, err := productionRenderManifestJSON(name, definition.Settings, *definition.Segments, definition.Streamctl)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -248,7 +242,7 @@ func (h *Handler) productionRenderDuplicate(w http.ResponseWriter, r *http.Reque
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	manifest, err := productionRenderManifestJSON(name, editor.Settings, *editor.Segments)
+	manifest, err := productionRenderManifestJSON(name, editor.Settings, *editor.Segments, editor.Streamctl)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -341,87 +335,6 @@ func (h *Handler) productionRendersQueue(w http.ResponseWriter, r *http.Request)
 	http.Redirect(w, r, fmt.Sprintf("/production/renders?conference=%s&queued=%d", url.QueryEscape(conference), queued), http.StatusSeeOther)
 }
 
-func (h *Handler) productionRenderGenerate(w http.ResponseWriter, r *http.Request) {
-	conference := strings.TrimSpace(r.FormValue("conference"))
-	templateID, err := strconv.ParseInt(strings.TrimSpace(r.FormValue("template_id")), 10, 64)
-	if !validProductionConference(conference) || err != nil || templateID <= 0 {
-		http.Error(w, "conference and template are required", http.StatusBadRequest)
-		return
-	}
-	recipe, err := h.DB.ProductionTemplate(templateID, conference)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			http.NotFound(w, r)
-		} else {
-			http.Error(w, err.Error(), 500)
-		}
-		return
-	}
-	var definition productionTemplateDefinition
-	if err := json.Unmarshal([]byte(recipe.JSON), &definition); err != nil || definition.Segments == nil {
-		http.Error(w, "template definition is invalid", http.StatusBadRequest)
-		return
-	}
-	talks, err := h.productionTalks(r.Context(), conference)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
-		return
-	}
-	cuts, err := h.DB.ListProductionCuts(conference)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	generated, skipped := 0, 0
-	// Only the full-talk generator opts into website recording registration.
-	// Merely having a talk association is not sufficient (e.g. future clips).
-	recordingKind := ""
-	for _, raw := range *definition.Segments {
-		var segment struct {
-			Type string `json:"type"`
-		}
-		if json.Unmarshal(raw, &segment) == nil && segment.Type == "streamctl.talkCuts" {
-			recordingKind = "full_talk"
-		}
-	}
-	for _, talk := range talks {
-		if talk.RecordingPolicy == "prohibited" {
-			skipped++
-			continue
-		}
-		talkCuts := cuts[talk.TalkID]
-		if recordingKind == "full_talk" && len(talkCuts) == 0 {
-			skipped++
-			continue
-		}
-		segments, err := expandProductionTemplate(*definition.Segments, conference, talk.TalkID, talk.SocialCard, talkCuts, talk.Title, productionTalkSchedule(talk.StartsAt, talk.EndsAt))
-		if err != nil {
-			http.Error(w, fmt.Sprintf("generate %s: %v", talk.Title, err), http.StatusBadRequest)
-			return
-		}
-		clip := makeProductionClip(recipe.Name, templateID, *definition.Segments, &talk, segments)
-		encodedClip, _ := json.Marshal(clip)
-		segments = []json.RawMessage{encodedClip}
-		manifest, err := productionRenderManifestJSON(talk.Title, definition.Settings, segments)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		_, created, err := h.DB.CreateProductionRender(conference, talk.Title, manifest, &templateID, talk.TalkID, recordingKind)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if created {
-			generated++
-		} else {
-			skipped++
-		}
-	}
-	location := fmt.Sprintf("/production/renders?conference=%s&generated=%d&skipped=%d", url.QueryEscape(conference), generated, skipped)
-	http.Redirect(w, r, location, http.StatusSeeOther)
-}
-
 func validateProductionRenderEditor(raw []byte) (productionTemplateDefinition, error) {
 	var definition productionTemplateDefinition
 	if len(raw) > maxRenderManifestBytes {
@@ -483,14 +396,17 @@ func productionRenderEditorDefinition(raw string) (productionTemplateDefinition,
 		return productionTemplateDefinition{}, errors.New("render draft must contain exactly one version 1 job")
 	}
 	segments := manifest.Jobs[0].Segments
-	return productionTemplateDefinition{Version: 1, Settings: manifest.Settings, Segments: &segments}, nil
+	return productionTemplateDefinition{Version: 1, Settings: manifest.Settings, Segments: &segments, Streamctl: manifest.Streamctl}, nil
 }
 
-func productionRenderManifestJSON(name string, settings json.RawMessage, segments []json.RawMessage) (string, error) {
+func productionRenderManifestJSON(name string, settings json.RawMessage, segments []json.RawMessage, metadata ...*productionEditorMetadata) (string, error) {
 	if settings == nil {
 		settings = json.RawMessage(`{}`)
 	}
 	manifest := productionRenderManifest{Version: 1, Settings: settings, Jobs: []productionRenderJob{{ID: productionRenderID(name), Segments: segments}}}
+	if len(metadata) > 0 {
+		manifest.Streamctl = metadata[0]
+	}
 	encoded, err := json.MarshalIndent(manifest, "", "  ")
 	return string(encoded), err
 }
@@ -710,6 +626,7 @@ func productionWorkerManifest(raw string) (string, error) {
 		manifest.Jobs[j].Segments = flattened
 	}
 
+	manifest.Streamctl = nil
 	encoded, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return "", err

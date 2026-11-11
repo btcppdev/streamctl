@@ -46,6 +46,9 @@ func makeProductionClip(name string, templateID int64, recipe []json.RawMessage,
 	return clip
 }
 func (h *Handler) clipRecipe(conference string, id int64) (string, []json.RawMessage, error) {
+	if id == -1 {
+		return "None — saved cuts only", []json.RawMessage{json.RawMessage(`{"type":"streamctl.talkCuts","transcribe":true}`)}, nil
+	}
 	if id == 0 {
 		return "Card + saved cuts", defaultTalkRecipe, nil
 	}
@@ -76,7 +79,7 @@ func (h *Handler) productionTemplateOptions(w http.ResponseWriter, r *http.Reque
 		NeedsTalk bool   `json:"needsTalk"`
 		Count     int    `json:"count"`
 	}
-	options := []option{{0, "Card + saved cuts", true, 2}}
+	options := []option{{-1, "None — saved cuts only", true, 1}, {0, "Card + saved cuts", true, 2}}
 	for _, template := range templates {
 		var def productionTemplateDefinition
 		if json.Unmarshal([]byte(template.JSON), &def) == nil && def.Segments != nil && len(*def.Segments) > 0 {
@@ -96,7 +99,7 @@ func (h *Handler) productionExpandTemplate(w http.ResponseWriter, r *http.Reques
 	fail := func(err error) { livestreamResponse(w, 400, map[string]string{"error": err.Error()}) }
 	conference := r.FormValue("conference")
 	id, err := strconv.ParseInt(r.FormValue("template_id"), 10, 64)
-	if !validProductionConference(conference) || err != nil || id < 0 {
+	if !validProductionConference(conference) || err != nil || id < -1 {
 		fail(fmt.Errorf("Choose a conference and template."))
 		return
 	}
@@ -110,6 +113,10 @@ func (h *Handler) productionExpandTemplate(w http.ResponseWriter, r *http.Reques
 			fail(err)
 			return
 		}
+	}
+	if !recipeNeedsTalk(recipe) && len(r.Form["talk_ids"]) > 0 {
+		fail(fmt.Errorf("This template no longer contains talk placeholders. The existing clip is unchanged."))
+		return
 	}
 	clips := []renderdraft.Clip{}
 	if !recipeNeedsTalk(recipe) {

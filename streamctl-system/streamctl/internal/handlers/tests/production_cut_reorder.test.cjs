@@ -14,7 +14,7 @@ function cutter(activeRange=1){
  const sandbox={ranges,activeRange,rangeList:{children:rows},Number,document:{getElementById:element},
   renderRanges(){events.push('render')},syncMarks(){events.push('marks')},
   URLSearchParams,csrf:'csrf',CUTTER:{conference:'berlin26',talks:[{}]},currentTalk:{talk_id:'talk'},currentIndex:0,
-  fetch:async(url,options)=>{requests.push({url,body:options.body});return {ok:true}},location:{},talksURL:()=>'/production/timestamp?conference=berlin26'
+  fetch:async(url,options)=>{requests.push({url,body:options.body});return {ok:true}},location:{},talksURL:()=>'/production/cuts?conference=berlin26'
  };
  vm.createContext(sandbox);vm.runInContext(helpers,sandbox);
  rows.forEach((row,i)=>sandbox.wireRangeDrag(row,i));

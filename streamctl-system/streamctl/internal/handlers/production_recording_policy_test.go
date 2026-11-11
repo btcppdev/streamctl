@@ -62,9 +62,9 @@ func TestRecordingPreferencesAppearInCutterListAndRenderEditor(t *testing.T) {
 			t.Fatalf("%s: status %d, missing %q", path, w.Code, want)
 		}
 	}
-	cutPath := "/production/timestamp/cut?conference=berlin26&talk_id=limited"
+	cutPath := "/production/cuts/edit?conference=berlin26&talk_id=limited"
 	check(cutPath, func(w *httptest.ResponseRecorder) { h.productionCut(w, httptest.NewRequest("GET", cutPath, nil)) }, "Privacy talk · Ada · Slides + audio only — no speaker video</strong>")
-	cutPath = "/production/timestamp/cut?conference=berlin26&talk_id=prohibited"
+	cutPath = "/production/cuts/edit?conference=berlin26&talk_id=prohibited"
 	check(cutPath, func(w *httptest.ResponseRecorder) { h.productionCut(w, httptest.NewRequest("GET", cutPath, nil)) }, "Private panel · Grace, Lin · Do not record</strong>")
 	listPath := "/production/renders?conference=berlin26"
 	check(listPath, func(w *httptest.ResponseRecorder) { h.productionRenders(w, httptest.NewRequest("GET", listPath, nil)) }, ">Do not record</span>")

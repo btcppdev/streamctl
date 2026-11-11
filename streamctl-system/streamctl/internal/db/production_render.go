@@ -212,3 +212,31 @@ func scanProductionRender(scanner productionRenderScanner) (ProductionRender, er
 	}
 	return item, nil
 }
+
+// CreateProductionRenderBatch inserts fresh, independent drafts all-or-nothing.
+func (db *DB) CreateProductionRenderBatch(drafts []ProductionRender) ([]int64, error) {
+	if len(drafts) == 0 {
+		return nil, fmt.Errorf("no render drafts")
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	ids := []int64{}
+	for _, draft := range drafts {
+		if draft.Conference == "" || draft.Name == "" || draft.JSON == "" {
+			return nil, fmt.Errorf("incomplete render draft")
+		}
+		result, err := tx.Exec(`INSERT INTO production_renders(conference,name,manifest_json) VALUES(?,?,?)`, draft.Conference, draft.Name, draft.JSON)
+		if err != nil {
+			return nil, err
+		}
+		id, err := result.LastInsertId()
+		if err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, tx.Commit()
+}

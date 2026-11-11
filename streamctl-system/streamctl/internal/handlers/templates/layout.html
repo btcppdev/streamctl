@@ -169,22 +169,7 @@ code { background: var(--bg); padding: 1px 4px; border-radius: 3px; font-size: 1
 .production-list-count { color: var(--muted); font-size: 12px; white-space: nowrap; }
 .production-notice { margin-bottom: 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); }
 .bulk-form { display: none; }
-.production-quick-create { padding: 0; border: 0; background: none; }
 .production-create-trigger { display: inline-flex; align-items: center; justify-content: center; min-width: 126px; min-height: 34px; margin: 0; padding: 6px 12px; font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-.production-new-menu { position: relative; }
-.production-new-menu > summary { list-style: none; white-space: nowrap; }
-.production-new-menu > summary::-webkit-details-marker { display: none; }
-.production-new-popover { position: absolute; top: calc(100% + 6px); right: 0; z-index: 20; width: 300px; overflow: hidden; border: 1px solid var(--border); border-radius: 7px; background: var(--panel); box-shadow: 0 12px 30px rgba(0,0,0,.35); }
-.production-new-option, .production-new-option-form button { display: block; width: 100%; padding: 11px 12px; border: 0; background: transparent; color: var(--text); text-align: left; cursor: pointer; font: inherit; }
-.production-new-option:hover, .production-new-option-form button:hover { background: rgba(110,168,254,.08); }
-.production-new-option:disabled { opacity: .5; cursor: default; }
-.production-new-option:disabled:hover { background: transparent; }
-.production-new-option strong, .production-new-option span, .production-new-option-form strong, .production-new-option-form span { display: block; }
-.production-new-option span, .production-new-option-form span { margin-top: 2px; color: var(--muted); font-size: 12px; }
-.production-new-option-form { padding: 0; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; background: none; }
-.production-template-picker { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 7px; padding: 10px; border: 0; border-top: 1px solid var(--border); border-radius: 0; background: var(--bg); }
-.production-template-picker[hidden] { display: none; }
-.production-template-picker select { min-width: 0; width: 100%; padding: 7px 8px; background: var(--panel); border: 1px solid var(--border); border-radius: 4px; color: var(--text); }
 .workspace-selector { display: flex; align-items: end; gap: 8px; padding: 12px; margin-bottom: 18px; }
 .workspace-selector .field { flex: 1; margin: 0; }
 @media (max-width: 760px) {
@@ -208,7 +193,7 @@ code { background: var(--bg); padding: 1px 4px; border-radius: 3px; font-size: 1
 	.production-list-toolbar .selection-actions .btn { flex: 1; }
 	.production-list-row { grid-template-columns: 1fr; gap: 8px; padding: 13px; }
 	.production-list-side { justify-content: space-between; }
-	.production-new-menu, .production-quick-create, .production-create-trigger { width: 100%; text-align: center; }
+	.production-create-trigger { width: 100%; text-align: center; }
 	.production-new-popover { left: 0; right: 0; width: auto; }
 }
 </style>
@@ -248,5 +233,5 @@ function wireProductionSelection(root){
 {{end}}
 {{define "productionNav"}}
 <form class="workspace-selector" method="get" action="{{.Action}}"><div class="field"><label for="conference">Conference workspace</label><select id="conference" name="conference" required onchange="this.form.submit()"><option value="">Select a conference…</option>{{range .Conferences}}<option value="{{.Tag}}" {{if eq .Tag $.Conference}}selected{{end}}>{{if .Description}}{{.Description}} — {{end}}{{.Tag}} · {{.Date}}</option>{{end}}</select></div></form>
-<nav class="production-nav"><a {{if eq .Active "overview"}}class="active"{{end}} href="/production{{if .Conference}}?conference={{urlquery .Conference}}{{end}}">Overview</a><a {{if eq .Active "timestamp"}}class="active"{{end}} href="/production/timestamp{{if .Conference}}?conference={{urlquery .Conference}}{{end}}">Talks</a><a {{if eq .Active "templates"}}class="active"{{end}} href="/production/templates{{if .Conference}}?conference={{urlquery .Conference}}{{end}}">Templates</a><a {{if eq .Active "renders"}}class="active"{{end}} href="/production/renders{{if .Conference}}?conference={{urlquery .Conference}}{{end}}">Renders</a></nav>
+<nav class="production-nav"><a {{if eq .Active "overview"}}class="active"{{end}} href="/production{{if .Conference}}?conference={{urlquery .Conference}}{{end}}">Overview</a><a {{if eq .Active "cuts"}}class="active"{{end}} href="/production/cuts{{if .Conference}}?conference={{urlquery .Conference}}{{end}}">Cuts</a><a {{if eq .Active "templates"}}class="active"{{end}} href="/production/templates{{if .Conference}}?conference={{urlquery .Conference}}{{end}}">Templates</a><a {{if eq .Active "renders"}}class="active"{{end}} href="/production/renders{{if .Conference}}?conference={{urlquery .Conference}}{{end}}">Renders</a></nav>
 {{end}}

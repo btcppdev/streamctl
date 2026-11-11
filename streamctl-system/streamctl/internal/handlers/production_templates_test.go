@@ -85,7 +85,7 @@ func TestProductionTemplatesListAndEditor(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
-	for _, want := range []string{"Templates", "+ New template", "production-quick-create", "Standard talk", "1 segment", "/production/templates/edit?conference=toronto", ">Talks</a>", "Select all", "selection-actions", ">Delete</button>", "/production/templates/delete-selected"} {
+	for _, want := range []string{"Templates", "+ New template", "Standard talk", "1 segment", "/production/templates/edit?conference=toronto", ">Cuts</a>", "Select all", "selection-actions", ">Delete</button>", "/production/templates/delete-selected"} {
 		if !strings.Contains(response.Body.String(), want) {
 			t.Fatalf("template list omitted %q: %s", want, response.Body.String())
 		}
@@ -97,10 +97,13 @@ func TestProductionTemplatesListAndEditor(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
-	for _, want := range []string{"Standard talk", "Render settings", "+ Add segment", "A video file or numbered sequence", "The current talk’s saved 1080p social card", "The saved source ranges for each talk", "streamctl.talkCard", "streamctl.talkCuts", "Choose media", "Duplicate", "Delete", ">Save</button>", "form=\"template-form\"", "template-editor-head", "min-height:66px", "template-editor-title", "template-actions", "position:sticky", "position:fixed", "safe-area-inset-bottom", "Drag to reorder", "template-workspace", "grid-template-columns:minmax(0,2fr) minmax(360px,1fr)", "template-side", "add.onclick=()=>openSegmentDialog()", "segment.type=file.sourceType", "createProductionMediaBrowser", "createProductionMediaPreview", "onMark:markPreview", "previewSelected(atMs)", "selectSegment(index,value)", "markPreview", "media-preview-mark-in", "media-preview-fine-row", "preview.setMarks", "Out must be after In", "allowBucketRoot:true", "kind!=='video'||file.proxyStatus==='finished'"} {
+	for _, want := range []string{"Standard talk", "+ Add segment", "A video file or numbered sequence", "The current talk’s saved 1080p social card", "The saved source ranges for each talk", "streamctl.talkCard", "streamctl.talkCuts", "Choose media", "Duplicate", "Delete", ">Save</button>", "form=\"template-form\"", "template-editor-head", "min-height:66px", "template-editor-title", "template-actions", "position:sticky", "position:fixed", "safe-area-inset-bottom", "Drag to reorder", "template-workspace", "grid-template-columns:minmax(0,2fr) minmax(360px,1fr)", "template-side", "add.onclick=()=>openSegmentDialog()", "segment.type=file.sourceType", "createProductionMediaBrowser", "createProductionMediaPreview", "onMark:markPreview", "previewSelected(atMs)", "selectSegment(index,value)", "markPreview", "media-preview-mark-in", "media-preview-fine-row", "preview.setMarks", "Out must be after In", "allowBucketRoot:true", "kind!=='video'||file.proxyStatus==='finished'"} {
 		if !strings.Contains(response.Body.String(), want) {
 			t.Fatalf("template editor omitted %q: %s", want, response.Body.String())
 		}
+	}
+	if strings.Contains(response.Body.String(), `id="editor-options"`) || strings.Contains(response.Body.String(), `id="recording-settings"`) {
+		t.Fatal("template editor exposed render-only options")
 	}
 	if strings.Contains(response.Body.String(), `id="live-preview-mode"`) || strings.Contains(response.Body.String(), `<div class="project-preview"`) {
 		t.Fatal("template editor exposed the render-only project player")
@@ -144,7 +147,7 @@ func TestProductionTemplateSaveValidatesAndPersists(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := &Handler{DB: database}
-	definition := `{"version":1,"settings":{},"segments":[{"type":"streamctl.talkCuts","overlay":"toronto/recordings/assets/bug.png"}]}`
+	definition := `{"version":1,"streamctl":{"registerRecording":true,"recordingTalkId":"talk"},"settings":{},"segments":[{"type":"streamctl.talkCuts","overlay":"toronto/recordings/assets/bug.png"}]}`
 	form := url.Values{"conference": {"toronto"}, "id": {"1"}, "name": {"Standard talk"}, "template": {definition}}
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/production/templates/save", strings.NewReader(form.Encode()))
@@ -154,7 +157,7 @@ func TestProductionTemplateSaveValidatesAndPersists(t *testing.T) {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 	item, err := database.ProductionTemplate(id, "toronto")
-	if err != nil || item.Name != "Standard talk" || !strings.Contains(item.JSON, "streamctl.talkCuts") {
+	if err != nil || item.Name != "Standard talk" || !strings.Contains(item.JSON, "streamctl.talkCuts") || strings.Contains(item.JSON, "registerRecording") {
 		t.Fatalf("template=%+v err=%v", item, err)
 	}
 }

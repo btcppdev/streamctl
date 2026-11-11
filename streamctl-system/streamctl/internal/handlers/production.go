@@ -203,8 +203,8 @@ func (h *Handler) productionTimestamp(w http.ResponseWriter, r *http.Request) {
 	page := productionTalksPage{Conference: conference}
 	var conferenceError string
 	page.Nav.Conferences, conferenceError = h.productionConferences(r.Context())
-	page.Nav.Active = "timestamp"
-	page.Nav.Action = "/production/timestamp"
+	page.Nav.Active = "cuts"
+	page.Nav.Action = "/production/cuts"
 	page.Nav.Conference = conference
 	page.Error = conferenceError
 	if conference == "" {
@@ -274,8 +274,8 @@ func (h *Handler) productionCut(w http.ResponseWriter, r *http.Request) {
 	}
 	talk := talks[index]
 	page := productionCutPage{Conference: conference, Talk: talk}
-	page.Nav.Active = "timestamp"
-	page.Nav.Action = "/production/timestamp"
+	page.Nav.Active = "cuts"
+	page.Nav.Action = "/production/cuts"
 	page.Nav.Conference = conference
 	page.Nav.Conferences = conferences
 	if index > 0 {
@@ -488,7 +488,7 @@ func groupProductionTalks(talks []productionTalkView) []productionTalkGroup {
 }
 
 func productionCutURL(conference, talkID string) string {
-	return "/production/timestamp/cut?conference=" + url.QueryEscape(conference) + "&talk_id=" + url.QueryEscape(talkID)
+	return "/production/cuts/edit?conference=" + url.QueryEscape(conference) + "&talk_id=" + url.QueryEscape(talkID)
 }
 
 func validProductionConference(value string) bool {

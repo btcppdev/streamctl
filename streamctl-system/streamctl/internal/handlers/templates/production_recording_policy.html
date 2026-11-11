@@ -18,6 +18,11 @@
 </style>
 <script>
 const productionRecordingPolicies={{recordingPolicyCatalog}};
+function appendProductionRecordingTag(node,notice){
+ if(!notice||!['limited','prohibited'].includes(notice.level))return;
+ const tag=document.createElement('span');tag.className='recording-policy-tag recording-policy-tag-'+notice.level;
+ tag.textContent=notice.level==='limited'?'Slides only':'Do not record';tag.title=notice.detail||'';node.append(tag);
+}
 function showProductionRecordingNotice(node,notice){
  node.replaceChildren();
  node.hidden=!notice||!['limited','prohibited'].includes(notice.level);

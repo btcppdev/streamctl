@@ -115,7 +115,7 @@ func TestTalkCardUsesSavedAPIPath(t *testing.T) {
 	}
 }
 
-func TestProductionRendersGenerateAndEdit(t *testing.T) {
+func TestProductionRendersCreateAndEdit(t *testing.T) {
 	database := productionHandlerTestDB(t)
 	templateID, err := database.CreateProductionTemplate("toronto", "Standard talk", `{"version":1,"settings":{},"segments":[{"type":"streamctl.talkCard","durationMs":5000},{"type":"streamctl.talkCuts"}]}`)
 	if err != nil {
@@ -126,14 +126,14 @@ func TestProductionRendersGenerateAndEdit(t *testing.T) {
 	}
 	h := &Handler{DB: database, funcs: template.FuncMap{}, BTCPP: productionCandidatesStub{
 		conferences: []btcppclient.Conference{{Tag: "toronto", Description: "Toronto++"}},
-		candidates:  []btcppclient.Candidate{{TalkID: "talk-1", Title: "A Great Talk", Venue: "one", SocialCard: "https://btcpp.nyc3.digitaloceanspaces.com/toronto/talks/legacy-id-1080p.png"}, {TalkID: "talk-2", Title: "Uncut"}},
+		candidates:  []btcppclient.Candidate{{TalkID: "talk-1", Title: "A Great Talk", Eligible: true, StartsAt: stringPointer("2026-07-22T10:00:00-04:00"), Venue: "one", SocialCard: "https://btcpp.nyc3.digitaloceanspaces.com/toronto/talks/legacy-id-1080p.png"}, {TalkID: "talk-2", Title: "Uncut"}},
 	}}
-	form := url.Values{"conference": {"toronto"}, "template_id": {strconv.FormatInt(templateID, 10)}}
-	request := httptest.NewRequest(http.MethodPost, "/production/renders/generate", strings.NewReader(form.Encode()))
+	form := url.Values{"conference": {"toronto"}, "include_talks": {"true"}, "output": {"separate"}, "talk_ids": {"talk-1"}, "template_id": {strconv.FormatInt(templateID, 10)}}
+	request := httptest.NewRequest(http.MethodPost, "/production/renders/create", strings.NewReader(form.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	response := httptest.NewRecorder()
-	h.productionRenderGenerate(response, request)
-	if response.Code != http.StatusSeeOther || !strings.Contains(response.Header().Get("Location"), "generated=1") {
+	h.productionRenderCreate(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"created":1`) {
 		t.Fatalf("status=%d location=%q body=%s", response.Code, response.Header().Get("Location"), response.Body.String())
 	}
 	items, err := database.ListProductionRenders("toronto")
@@ -148,7 +148,7 @@ func TestProductionRendersGenerateAndEdit(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("list status=%d body=%s", response.Code, response.Body.String())
 	}
-	for _, want := range []string{"Renders", "+ New render", "production-new-menu", "From template", ">Blank<", "Standard talk", "A Great Talk", "/production/renders/edit?conference=toronto&amp;id=", "Select all", "selection-actions", ">Queue</button>", ">Delete</button>", "Draft"} {
+	for _, want := range []string{"Renders", "+ New render", "Include talks", "Create blank render", "Render settings", "Standard talk", "A Great Talk", "/production/renders/edit?conference=toronto&amp;id=", "Select all", "selection-actions", ">Queue</button>", ">Delete</button>", "Draft"} {
 		if !strings.Contains(response.Body.String(), want) {
 			t.Fatalf("render list omitted %q: %s", want, response.Body.String())
 		}
@@ -207,7 +207,7 @@ func TestProductionRendersGenerateAndEdit(t *testing.T) {
 	}
 }
 
-func TestProductionRenderGenerateRejectsUnavailableTalkCard(t *testing.T) {
+func TestProductionRenderCreateRejectsUnavailableTalkCard(t *testing.T) {
 	for _, card := range []string{"", "https://example.com/toronto/talks/card.png"} {
 		t.Run(card, func(t *testing.T) {
 			database := productionHandlerTestDB(t)
@@ -219,13 +219,13 @@ func TestProductionRenderGenerateRejectsUnavailableTalkCard(t *testing.T) {
 				t.Fatal(err)
 			}
 			h := &Handler{DB: database, BTCPP: productionCandidatesStub{
-				candidates: []btcppclient.Candidate{{TalkID: "talk-1", Title: "A Great Talk", SocialCard: card}},
+				candidates: []btcppclient.Candidate{{TalkID: "talk-1", Title: "A Great Talk", Eligible: true, StartsAt: stringPointer("2026-07-22T10:00:00-04:00"), Venue: "one", SocialCard: card}},
 			}}
-			form := url.Values{"conference": {"toronto"}, "template_id": {strconv.FormatInt(templateID, 10)}}
-			request := httptest.NewRequest(http.MethodPost, "/production/renders/generate", strings.NewReader(form.Encode()))
+			form := url.Values{"conference": {"toronto"}, "include_talks": {"true"}, "output": {"separate"}, "talk_ids": {"talk-1"}, "template_id": {strconv.FormatInt(templateID, 10)}}
+			request := httptest.NewRequest(http.MethodPost, "/production/renders/create", strings.NewReader(form.Encode()))
 			request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 			response := httptest.NewRecorder()
-			h.productionRenderGenerate(response, request)
+			h.productionRenderCreate(response, request)
 			if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "A Great Talk") || !strings.Contains(response.Body.String(), "social card") {
 				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 			}
@@ -245,7 +245,7 @@ func TestProductionRenderCreateUsesEditableDefaultName(t *testing.T) {
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	response := httptest.NewRecorder()
 	h.productionRenderCreate(response, request)
-	if response.Code != http.StatusSeeOther || !strings.Contains(response.Header().Get("Location"), "created=1") {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "created=1") {
 		t.Fatalf("status=%d location=%q body=%s", response.Code, response.Header().Get("Location"), response.Body.String())
 	}
 	items, err := database.ListProductionRenders("toronto")

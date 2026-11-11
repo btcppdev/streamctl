@@ -123,8 +123,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/streams/preview/", h.auth(http.HandlerFunc(h.streamPreview)))
 	mux.Handle("/spaces/browse", h.auth(http.HandlerFunc(h.spacesBrowse)))
 	mux.Handle("/production", h.auth(http.HandlerFunc(h.productionHome)))
-	mux.Handle("/production/timestamp", h.auth(http.HandlerFunc(h.productionTimestamp)))
-	mux.Handle("/production/timestamp/cut", h.auth(http.HandlerFunc(h.productionCut)))
+	mux.Handle("/production/cuts", h.auth(http.HandlerFunc(h.productionTimestamp)))
+	mux.Handle("/production/cuts/edit", h.auth(http.HandlerFunc(h.productionCut)))
 	mux.Handle("/production/media/browse", h.auth(http.HandlerFunc(h.mediaBrowse)))
 	mux.Handle("/production/media/info", h.auth(http.HandlerFunc(h.mediaInfo)))
 	mux.Handle("/production/media/open", h.auth(http.HandlerFunc(h.mediaOpen)))
@@ -141,15 +141,13 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/production/renders/edit", h.auth(http.HandlerFunc(h.productionRenderEdit)))
 	mux.Handle("/production/renders/template-options", h.auth(http.HandlerFunc(h.productionTemplateOptions)))
 	mux.Handle("/production/renders/expand-template", h.mutation(http.HandlerFunc(h.productionExpandTemplate)))
-	mux.Handle("/production/renders/livestream-options", h.auth(http.HandlerFunc(h.productionLivestreamOptions)))
-	mux.Handle("/production/renders/create-livestream", h.mutation(http.HandlerFunc(h.productionRenderCreateLivestream)))
+	mux.Handle("/production/renders/create-options", h.auth(http.HandlerFunc(h.productionLivestreamOptions)))
 	mux.Handle("/production/renders/create", h.mutation(http.HandlerFunc(h.productionRenderCreate)))
 	mux.Handle("/production/renders/save", h.mutation(http.HandlerFunc(h.productionRenderSave)))
 	mux.Handle("/production/renders/duplicate", h.mutation(http.HandlerFunc(h.productionRenderDuplicate)))
 	mux.Handle("/production/renders/delete", h.mutation(http.HandlerFunc(h.productionRenderDelete)))
 	mux.Handle("/production/renders/delete-selected", h.mutation(http.HandlerFunc(h.productionRendersDelete)))
 	mux.Handle("/production/renders/queue", h.mutation(http.HandlerFunc(h.productionRendersQueue)))
-	mux.Handle("/production/renders/generate", h.mutation(http.HandlerFunc(h.productionRenderGenerate)))
 
 	// Keep retired URLs explicit so old bookmarks/forms cannot enqueue work.
 	for _, path := range []string{"/normalize", "/normalize/process", "/normalize/process-selected", "/livestream", "/livestream/process", "/livestream/process-selected", "/livestream-files", "/livestream-files/process", "/livestream-files/process-selected", "/worker/normalize/requeue", "/worker/normalize/requeue-stale", "/worker/normalize/clear-resolved-failures", "/livestream-files/requeue", "/livestream-files/requeue-stale", "/livestream-files/clear-resolved-failures"} {
@@ -240,6 +238,10 @@ type streamView struct {
 }
 
 func (h *Handler) index(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
 	streams, err := h.DB.ListStreams()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -2801,7 +2803,7 @@ func (h *Handler) renderStatus(w http.ResponseWriter, r *http.Request, status in
 		}
 		return ""
 	}
-	tmpl, err := template.New("").Funcs(funcs).ParseFS(tmpls, "layout.html", "production_media_browser.html", "production_media_preview.html", "production_project_preview.html", "production_clip_editor.html", "production_recording_policy.html", "broadcast_picker.html", "worker_jobs.html", "worker_panel.html", "live_updates.html", name)
+	tmpl, err := template.New("").Funcs(funcs).ParseFS(tmpls, "layout.html", "production_media_browser.html", "production_media_preview.html", "production_project_preview.html", "production_clip_editor.html", "production_recording_policy.html", "broadcast_picker.html", "worker_jobs.html", "worker_panel.html", "live_updates.html", "render_settings.html", "recording_controls.html", "production_render_create.html", name)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
