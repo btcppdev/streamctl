@@ -22,65 +22,7 @@ func TestGPUFailureJournalSummaryReturnsLastNonblankLines(t *testing.T) {
 	}
 }
 
-func TestReconcileStaleGPUQueueDoesNotRequeueWhileWorkerIsStarting(t *testing.T) {
-	database := openGPUQueueTestDB(t)
-	item, err := database.EnqueueGPUJob("toronto/recordings/edits/livestreams/day1.mp4")
-	if err != nil {
-		t.Fatal(err)
-	}
-	unit := gpuTranscodeUnitName(item.RawPath)
-	if err := database.MarkGPUQueueRunning(item.ID, unit); err != nil {
-		t.Fatal(err)
-	}
-	running, err := database.GetGPUQueueItemByRawPath(item.RawPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	h := &Handler{DB: database}
-	h.reconcileStaleGPUQueue(gpuWorkerView{Managed: true, Status: "starting"}, nil, []db.GPUJobQueueItem{*running})
-
-	got, err := database.GetGPUQueueItemByRawPath(item.RawPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Status != "running" || got.UnitName != unit {
-		t.Fatalf("transient worker state requeued a live job: %#v", got)
-	}
-}
-
-func TestReconcileStaleGPUQueueRequeuesWhenManagedWorkerIsGone(t *testing.T) {
-	database := openGPUQueueTestDB(t)
-	item, err := database.EnqueueGPUJob("toronto/recordings/edits/livestreams/day1.mp4")
-	if err != nil {
-		t.Fatal(err)
-	}
-	unit := gpuTranscodeUnitName(item.RawPath)
-	if err := database.MarkGPUQueueRunning(item.ID, unit); err != nil {
-		t.Fatal(err)
-	}
-	running, err := database.GetGPUQueueItemByRawPath(item.RawPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	h := &Handler{DB: database}
-	h.reconcileStaleGPUQueue(gpuWorkerView{Managed: true, Status: "not found"}, []gpuJobView{{
-		UnitName:    unit,
-		RawPath:     item.RawPath,
-		ActiveState: "running",
-	}}, []db.GPUJobQueueItem{*running})
-
-	got, err := database.GetGPUQueueItemByRawPath(item.RawPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Status != "queued" {
-		t.Fatalf("missing managed worker did not requeue stale job: %#v", got)
-	}
-}
-
-func TestRemoteGPUTranscodeCommandLocksDuplicateFallbackLaunches(t *testing.T) {
+func TestRemoteGPUJobCommandLocksDuplicateFallbackLaunches(t *testing.T) {
 	if _, err := exec.LookPath("flock"); err != nil {
 		t.Skip("flock is required by the worker fallback")
 	}
@@ -92,7 +34,7 @@ func TestRemoteGPUTranscodeCommandLocksDuplicateFallbackLaunches(t *testing.T) {
 		t.Fatal(err)
 	}
 	unit := "streamctl-gpu-lock-test.service"
-	remote := remoteGPUTranscodeCommand(unit, worker, "toronto/recordings/edits/livestreams/day1.mp4")
+	remote := remoteGPUJobCommand(unit, "test worker", "toronto/recordings/edits/livestreams/day1.mp4", "exec "+shellQuote(worker))
 	run := func() {
 		cmd := exec.Command("bash", "-c", remote)
 		cmd.Env = append(os.Environ(), "STREAMCTL_GPU_JOB_ROOT="+root)

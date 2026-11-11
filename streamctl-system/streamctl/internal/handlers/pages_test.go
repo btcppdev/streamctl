@@ -16,12 +16,7 @@ func TestStagingAndWorkerTemplatesRender(t *testing.T) {
 		data     any
 		want     string
 	}{
-		{
-			name:     "normalize staging",
-			template: "normalize.html",
-			data:     map[string]any{},
-			want:     "Select recordings to normalize",
-		},
+
 		{
 			name:     "production overview",
 			template: "production.html",
@@ -42,7 +37,6 @@ func TestStagingAndWorkerTemplatesRender(t *testing.T) {
 				"GPUWorker":       gpuWorkerView{},
 				"GPUStatus":       gpuStatusView{},
 				"GPUAvailability": gpuAvailabilityView{},
-				"NormalizeQueue":  gpuQueueDashboardView{},
 				"RenderQueue":     renderJobsView{},
 			},
 			want: "GPU lifecycle and execution queues",
@@ -77,8 +71,6 @@ func TestLegacyPageRedirects(t *testing.T) {
 		legacy string
 		want   string
 	}{
-		{legacy: "/livestream", want: "/normalize"},
-		{legacy: "/livestream-files", want: "/normalize"},
 		{legacy: "/render-jobs", want: "/render"},
 	}
 

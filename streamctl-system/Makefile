@@ -27,8 +27,7 @@ IP := $(shell cd terraform && $(TERRAFORM) output -raw ipv4 2>/dev/null)
         ssh logs timers destroy check-token check-gpu-token check-ip stream-logs upload \
         install-rclone-config maybe-install-rclone-config \
         install-digitalocean-gpu-token maybe-install-digitalocean-gpu-token verify-digitalocean-gpu-token backup-db \
-        install-runpod-token maybe-install-runpod-token verify-runpod-token \
-        gpu-upload gpu-transcode
+        install-runpod-token maybe-install-runpod-token verify-runpod-token
 
 # ---------- help ----------
 
@@ -279,28 +278,6 @@ verify-runpod-token: check-ip ## Verify the installed RunPod token can list pods
 	  curl -sS -w "\nHTTP %{http_code}\n" \
 	    -H "Authorization: Bearer $$token" \
 	    "https://rest.runpod.io/v1/pods"'
-
-# Usage: make gpu-upload GPU_HOST=ubuntu@1.2.3.4
-gpu-upload: ## Upload the NVENC transcode worker script and rclone config to a GPU VM.
-	@if [ -z "$(GPU_HOST)" ]; then \
-	  echo "Usage: make gpu-upload GPU_HOST=<user@host>" >&2; \
-	  exit 1; \
-	fi
-	@if [ ! -f rclone.conf ]; then \
-	  echo "ERROR: ./rclone.conf not found." >&2; \
-	  exit 1; \
-	fi
-	scp scripts/transcode-nvenc.sh "$(GPU_HOST):/home/ubuntu/transcode-nvenc.sh"
-	scp rclone.conf "$(GPU_HOST):/home/ubuntu/rclone.conf"
-	ssh "$(GPU_HOST)" 'chmod +x /home/ubuntu/transcode-nvenc.sh'
-
-# Usage: make gpu-transcode GPU_HOST=ubuntu@1.2.3.4 FILE=vienna/recordings/edits/livestream/file.mp4
-gpu-transcode: ## Start one NVENC transcode job on the GPU VM.
-	@if [ -z "$(GPU_HOST)" ] || [ -z "$(FILE)" ]; then \
-	  echo "Usage: make gpu-transcode GPU_HOST=<user@host> FILE=<spaces-path>" >&2; \
-	  exit 1; \
-	fi
-	ssh "$(GPU_HOST)" 'RCLONE_CONFIG=/home/ubuntu/rclone.conf /home/ubuntu/transcode-nvenc.sh "$(FILE)"'
 
 # ---------- teardown ----------
 

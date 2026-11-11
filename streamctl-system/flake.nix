@@ -143,13 +143,7 @@
             gpuWorkerHost = lib.mkOption {
               type = lib.types.str;
               default = "";
-              description = "Optional SSH target for a GPU transcode worker, e.g. ubuntu@1.2.3.4.";
-            };
-
-            gpuWorkerCommand = lib.mkOption {
-              type = lib.types.str;
-              default = "/root/transcode-nvenc.sh";
-              description = "Command path on the GPU worker that accepts one Spaces object path.";
+              description = "Optional SSH target for a render and preview worker, e.g. ubuntu@1.2.3.4.";
             };
 
             renderWorkerCommand = lib.mkOption {
@@ -272,24 +266,6 @@
               description = "Delete cached remote files after ffmpeg exits successfully.";
             };
 
-            normalizePrefetch = lib.mkOption {
-              type = lib.types.bool;
-              default = true;
-              description = "Re-encode prefetched remote clips to streaming-friendly CBR before streaming.";
-            };
-
-            normalizeVideoBitrate = lib.mkOption {
-              type = lib.types.str;
-              default = "6800k";
-              description = "Target video bitrate for normalized prefetched clips.";
-            };
-
-            normalizeAudioBitrate = lib.mkOption {
-              type = lib.types.str;
-              default = "160k";
-              description = "Target audio bitrate for normalized prefetched clips.";
-            };
-
             dataDir = lib.mkOption {
               type = lib.types.str;
               default = "/var/lib/streamctl";
@@ -374,7 +350,6 @@
                     -btcpp-x-endpoint-name=${lib.escapeShellArg cfg.btcppXEndpointName} \
                     -gpu-worker-host=${cfg.gpuWorkerHost} \
                     -gpu-worker-ssh-key=${cfg.dataDir}/gpu-worker-ssh-key \
-                    -gpu-worker-command=${cfg.gpuWorkerCommand} \
                     -render-worker-command=${cfg.renderWorkerCommand} \
                     -render-output-dir=${cfg.renderOutputDir} \
                     -do-token-file=${cfg.digitalOceanTokenFile} \
@@ -395,9 +370,6 @@
                     -notify-email=${cfg.notificationEmail} \
                     -sendmail=${cfg.sendmailPath} \
                     -cleanup-cache=${lib.boolToString cfg.cleanupCache} \
-                    -normalize-prefetch=${lib.boolToString cfg.normalizePrefetch} \
-                    -normalize-video-bitrate=${cfg.normalizeVideoBitrate} \
-                    -normalize-audio-bitrate=${cfg.normalizeAudioBitrate} \
                     -unit-dir=/run/systemd/system \
                     -unit-prefix=streamctl- \
                     -run-user=${cfg.user}

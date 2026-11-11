@@ -22,6 +22,13 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "stream-check" {
+		if err := runStreamCheck(os.Args[2:]); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+
 	if len(os.Args) > 1 && os.Args[1] == "btcpp-candidates" {
 		if err := runBTCPPCandidates(os.Args[2:]); err != nil {
 			log.Fatal(err)
@@ -58,9 +65,6 @@ func main() {
 		notifyEmail         = flag.String("notify-email", "", "email address for prefetch success/failure notifications")
 		sendmailPath        = flag.String("sendmail", "/run/current-system/sw/bin/sendmail", "sendmail-compatible binary for notifications")
 		cleanupCache        = flag.Bool("cleanup-cache", true, "delete cached remote files after successful streaming")
-		normalize           = flag.Bool("normalize-prefetch", true, "re-encode prefetched remote clips to streaming-friendly CBR before streaming")
-		videoBitrate        = flag.String("normalize-video-bitrate", "6800k", "video bitrate for normalized prefetched clips")
-		audioBitrate        = flag.String("normalize-audio-bitrate", "160k", "audio bitrate for normalized prefetched clips")
 		nostrKeyDir         = flag.String("nostr-key-dir", "/var/lib/streamctl/nostr-keys", "directory for stored Nostr private keys")
 		publicBaseURL       = flag.String("public-base-url", "", "public base URL used in Nostr live events, e.g. https://stream.example.com")
 		btcppOAuthBase      = flag.String("btcpp-oauth-base", "https://btcpp.dev", "bitcoin++ OAuth server base URL")
@@ -72,9 +76,8 @@ func main() {
 		btcppXEndpointID    = flag.Int64("btcpp-x-endpoint-id", 0, "saved X RTMP endpoint ID for importing website broadcast plans; use either ID or name")
 		btcppXEndpointName  = flag.String("btcpp-x-endpoint-name", "", "exact saved X RTMP endpoint name for importing website broadcast plans")
 		btcppPlanInterval   = flag.Duration("btcpp-plan-poll-interval", 3*time.Minute, "interval between website broadcast plan imports")
-		gpuWorkerHost       = flag.String("gpu-worker-host", "", "SSH target for GPU transcode worker, e.g. ubuntu@1.2.3.4")
+		gpuWorkerHost       = flag.String("gpu-worker-host", "", "SSH target for render and preview worker, e.g. ubuntu@1.2.3.4")
 		gpuWorkerSSHKey     = flag.String("gpu-worker-ssh-key", "", "managed worker SSH key path; defaults to the production data directory")
-		gpuWorkerCommand    = flag.String("gpu-worker-command", "/root/transcode-nvenc.sh", "command path on GPU worker used to process one Spaces path")
 		renderWorkerCommand = flag.String("render-worker-command", "/root/render-from-spaces.py", "render wrapper command on the GPU worker")
 		renderOutputDir     = flag.String("render-output-dir", "/workspace/streamctl-render-output", "temporary render output directory on the GPU worker")
 		doTokenFile         = flag.String("do-token-file", "", "DigitalOcean API token file for managed GPU workers")
@@ -89,7 +92,7 @@ func main() {
 		gpuDropletImage     = flag.String("gpu-droplet-image", "gpu-h100x1-base", "managed GPU Droplet image slug")
 		gpuSSHKeyName       = flag.String("gpu-ssh-key-name", "streamctl-deploy", "DigitalOcean SSH key name to install on managed GPU Droplets")
 		gpuWorkerUser       = flag.String("gpu-worker-user", "root", "SSH user for managed GPU Droplets")
-		gpuDestroyAfterJob  = flag.Bool("gpu-destroy-after-job", false, "destroy managed GPU worker after a successful transcode job")
+		gpuDestroyAfterJob  = flag.Bool("gpu-destroy-after-job", false, "destroy managed GPU worker after a successful GPU job")
 		unitDir             = flag.String("unit-dir", "/etc/systemd/system", "directory for generated systemd units")
 		unitPrefix          = flag.String("unit-prefix", "streamctl-", "prefix for generated systemd unit names")
 		runUser             = flag.String("run-user", "streamctl", "user to run streams as")
@@ -162,9 +165,6 @@ func main() {
 		NotifyEmail:    *notifyEmail,
 		SendmailPath:   *sendmailPath,
 		CleanupCache:   *cleanupCache,
-		Normalize:      *normalize,
-		VideoBitrate:   *videoBitrate,
-		AudioBitrate:   *audioBitrate,
 		NostrKeyDir:    *nostrKeyDir,
 		PublicBaseURL:  strings.TrimRight(*publicBaseURL, "/"),
 		SelfPath:       os.Args[0],
@@ -195,7 +195,6 @@ func main() {
 		NostrKeyOwner:       *runUser,
 		GPUWorkerHost:       strings.TrimSpace(*gpuWorkerHost),
 		GPUWorkerSSHKey:     strings.TrimSpace(*gpuWorkerSSHKey),
-		GPUWorkerCommand:    strings.TrimSpace(*gpuWorkerCommand),
 		RenderWorkerCommand: strings.TrimSpace(*renderWorkerCommand),
 		RenderOutputDir:     strings.TrimRight(strings.TrimSpace(*renderOutputDir), "/"),
 		DOTokenFile:         strings.TrimSpace(*doTokenFile),

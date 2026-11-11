@@ -2,11 +2,8 @@ package handlers
 
 import (
 	"context"
-	"crypto/sha256"
-	"database/sql"
 	"embed"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -64,7 +61,6 @@ type Handler struct {
 	NostrKeyOwner       string
 	GPUWorkerHost       string
 	GPUWorkerSSHKey     string
-	GPUWorkerCommand    string
 	RenderWorkerCommand string
 	RenderOutputDir     string
 	DOTokenFile         string
@@ -154,23 +150,15 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/production/renders/delete-selected", h.mutation(http.HandlerFunc(h.productionRendersDelete)))
 	mux.Handle("/production/renders/queue", h.mutation(http.HandlerFunc(h.productionRendersQueue)))
 	mux.Handle("/production/renders/generate", h.mutation(http.HandlerFunc(h.productionRenderGenerate)))
-	mux.Handle("/normalize", h.auth(http.HandlerFunc(h.normalizationFiles)))
-	mux.Handle("/normalize/process", h.mutation(http.HandlerFunc(h.normalizationFileProcess)))
-	mux.Handle("/normalize/process-selected", h.mutation(http.HandlerFunc(h.normalizationFilesProcessSelected)))
-	mux.Handle("/livestream", h.auth(http.HandlerFunc(redirectTo("/normalize"))))
-	mux.Handle("/livestream/process", h.mutation(http.HandlerFunc(h.normalizationFileProcess)))
-	mux.Handle("/livestream/process-selected", h.mutation(http.HandlerFunc(h.normalizationFilesProcessSelected)))
-	mux.Handle("/livestream-files", h.auth(http.HandlerFunc(redirectTo("/normalize"))))
-	mux.Handle("/livestream-files/process", h.mutation(http.HandlerFunc(h.normalizationFileProcess)))
-	mux.Handle("/livestream-files/process-selected", h.mutation(http.HandlerFunc(h.normalizationFilesProcessSelected)))
+
+	// Keep retired URLs explicit so old bookmarks/forms cannot enqueue work.
+	for _, path := range []string{"/normalize", "/normalize/process", "/normalize/process-selected", "/livestream", "/livestream/process", "/livestream/process-selected", "/livestream-files", "/livestream-files/process", "/livestream-files/process-selected", "/worker/normalize/requeue", "/worker/normalize/requeue-stale", "/worker/normalize/clear-resolved-failures", "/livestream-files/requeue", "/livestream-files/requeue-stale", "/livestream-files/clear-resolved-failures"} {
+		mux.Handle(path, h.auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "The normalization workflow has been retired. Finished videos are checked for stream readiness when scheduled and played directly.", http.StatusGone)
+		})))
+	}
 	mux.Handle("/worker", h.auth(http.HandlerFunc(h.worker)))
 	mux.Handle("/worker/media/requeue", h.mutation(http.HandlerFunc(h.productionProxyRequeue)))
-	mux.Handle("/worker/normalize/requeue", h.mutation(http.HandlerFunc(h.normalizationFileRequeue)))
-	mux.Handle("/worker/normalize/requeue-stale", h.mutation(http.HandlerFunc(h.normalizationFilesRequeueStale)))
-	mux.Handle("/worker/normalize/clear-resolved-failures", h.mutation(http.HandlerFunc(h.normalizationFilesClearResolvedFailures)))
-	mux.Handle("/livestream-files/requeue", h.mutation(http.HandlerFunc(h.normalizationFileRequeue)))
-	mux.Handle("/livestream-files/requeue-stale", h.mutation(http.HandlerFunc(h.normalizationFilesRequeueStale)))
-	mux.Handle("/livestream-files/clear-resolved-failures", h.mutation(http.HandlerFunc(h.normalizationFilesClearResolvedFailures)))
 	mux.Handle("/gpu-worker/create", h.mutation(http.HandlerFunc(h.gpuWorkerCreate)))
 	mux.Handle("/gpu-worker/destroy", h.mutation(http.HandlerFunc(h.gpuWorkerDestroy)))
 	mux.Handle("/gpu-worker/logs/", h.auth(http.HandlerFunc(h.gpuJobLogs)))
@@ -665,15 +653,8 @@ func (h *Handler) streamFromForm(r *http.Request, existing *db.Stream) (*db.Stre
 	if len(videos) == 0 {
 		return nil, nil, nil, fmt.Errorf("at least one video clip required")
 	}
-	// Imported broadcasts play finished renders directly, just as they do in
-	// systemd.Manager.normalizeStream. Only trust the persisted plan link.
 	autoScheduled := existing != nil && existing.AutoScheduled
-	if !autoScheduled {
-		if err := h.validateNormalizedStreamVideos(r.Context(), videos); err != nil {
-			return nil, nil, nil, err
-		}
-	}
-	if err := h.validateCachedPlaylist(videos); err != nil {
+	if err := h.validateStreamVideos(r.Context(), videos); err != nil {
 		return nil, nil, nil, err
 	}
 
@@ -913,19 +894,7 @@ func (h *Handler) resyncStreamsUsingEndpoint(epID int64) error {
 	return nil
 }
 
-// ---------- Recording normalization ----------
-
-type normalizationFileView struct {
-	Conference      string
-	Name            string
-	RawPath         string
-	NormalizedPath  string
-	Processed       bool
-	ProcessingUnit  string
-	ProcessingState string
-	ProcessingStale bool
-	ProcessingNow   bool
-}
+// ---------- Shared GPU worker ----------
 
 type gpuWorkerView struct {
 	Managed    bool
@@ -988,239 +957,6 @@ type gpuAvailabilityView struct {
 	Error           string
 }
 
-type gpuQueueItemView struct {
-	ID            int64
-	RawPath       string
-	UnitName      string
-	Status        string
-	AttemptCount  int
-	LastAttemptAt string
-	LastError     string
-	CreatedAt     string
-	StartedAt     string
-	FinishedAt    string
-	ProcessingNow bool
-	Stale         bool
-}
-
-type gpuQueueDashboardView struct {
-	Queued       int
-	Running      int
-	Failed       int
-	Finished     int
-	Cancelled    int
-	Items        []gpuQueueItemView
-	HasOpenJobs  bool
-	HasStaleJobs bool
-	LastError    string
-}
-
-func (h *Handler) normalizationFiles(w http.ResponseWriter, r *http.Request) {
-	if strings.TrimSpace(h.Remote) == "" {
-		http.Error(w, "remote browsing is not configured", http.StatusBadRequest)
-		return
-	}
-	files, err := h.listNormalizationFiles(r.Context())
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
-		return
-	}
-	worker := h.gpuWorkerView(r.Context())
-	gpuStatus := h.gpuStatus(r.Context(), worker)
-	openQueue, err := h.DB.ListOpenGPUQueueItems(100)
-	if err != nil {
-		log.Printf("listing GPU queue failed: %v", err)
-	}
-	openQueue = h.reconcileStaleGPUQueue(worker, gpuStatus.Jobs, openQueue)
-	nowProcessing := currentNormalizationGPUJob(gpuStatus.Jobs)
-	markNormalizationFilesProcessing(files, gpuStatus.Jobs, openQueue, nowProcessing)
-	files = unprocessedNormalizationFiles(files)
-	h.render(w, r, "normalize.html", map[string]any{
-		"Files":         files,
-		"GPUConfigured": worker.Configured,
-		"GPUWorker":     worker,
-		"Started":       r.URL.Query().Get("started"),
-		"Job":           r.URL.Query().Get("job"),
-		"Queued":        r.URL.Query().Get("queued"),
-		"NowProcessing": nowProcessing,
-		"Error":         r.URL.Query().Get("err"),
-	})
-}
-
-func (h *Handler) normalizationFileProcess(w http.ResponseWriter, r *http.Request) {
-	if !h.gpuWorkerConfigured() {
-		http.Error(w, "GPU worker is not configured", http.StatusBadRequest)
-		return
-	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	rawPath := strings.TrimSpace(r.FormValue("path"))
-	if _, err := normalizedRecordingPath(rawPath); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	item, err := h.DB.EnqueueGPUJob(rawPath)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("queueing GPU job failed: %v", err), http.StatusInternalServerError)
-		return
-	}
-	if err := h.saveGPUJobLog(gpuJobView{
-		UnitName:    firstNonEmptyString(item.UnitName, gpuTranscodeUnitName(rawPath)),
-		RawPath:     rawPath,
-		Description: "streamctl GPU transcode " + rawPath,
-		ActiveState: "queued",
-	}); err != nil {
-		log.Printf("saving queued GPU job %s failed: %v", rawPath, err)
-	}
-	go h.dispatchGPUQueueOnce(context.Background())
-
-	q := url.Values{}
-	q.Set("started", rawPath)
-	if item.UnitName != "" {
-		q.Set("job", item.UnitName)
-	}
-	http.Redirect(w, r, "/normalize?"+q.Encode(), http.StatusSeeOther)
-}
-
-func (h *Handler) normalizationFilesProcessSelected(w http.ResponseWriter, r *http.Request) {
-	if !h.gpuWorkerConfigured() {
-		http.Error(w, "GPU worker is not configured", http.StatusBadRequest)
-		return
-	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	paths := r.Form["path"]
-	queued := 0
-	for _, rawPath := range paths {
-		rawPath = strings.TrimSpace(rawPath)
-		if rawPath == "" {
-			continue
-		}
-		if _, err := normalizedRecordingPath(rawPath); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		item, err := h.DB.EnqueueGPUJob(rawPath)
-		if err != nil {
-			http.Error(w, fmt.Sprintf("queueing GPU job failed: %v", err), http.StatusInternalServerError)
-			return
-		}
-		if err := h.saveGPUJobLog(gpuJobView{
-			UnitName:    firstNonEmptyString(item.UnitName, gpuTranscodeUnitName(rawPath)),
-			RawPath:     rawPath,
-			Description: "streamctl GPU transcode " + rawPath,
-			ActiveState: "queued",
-		}); err != nil {
-			log.Printf("saving queued GPU job %s failed: %v", rawPath, err)
-		}
-		queued++
-	}
-	if queued > 0 {
-		go h.dispatchGPUQueueOnce(context.Background())
-	}
-	q := url.Values{}
-	q.Set("queued", strconv.Itoa(queued))
-	http.Redirect(w, r, "/normalize?"+q.Encode(), http.StatusSeeOther)
-}
-
-func (h *Handler) normalizationFileRequeue(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	rawPath := strings.TrimSpace(r.FormValue("path"))
-	if _, err := normalizedRecordingPath(rawPath); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	if err := h.DB.ResetGPUJobForRetry(rawPath, "manually retried from Normalize"); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			http.Error(w, "job is not retryable", http.StatusBadRequest)
-			return
-		}
-		http.Error(w, fmt.Sprintf("retrying GPU job failed: %v", err), http.StatusInternalServerError)
-		return
-	}
-	if err := h.saveGPUJobLog(gpuJobView{
-		UnitName:    gpuTranscodeUnitName(rawPath),
-		RawPath:     rawPath,
-		Description: "streamctl GPU transcode " + rawPath,
-		ActiveState: "queued",
-	}); err != nil {
-		log.Printf("saving requeued GPU job %s failed: %v", rawPath, err)
-	}
-	go h.dispatchGPUQueueOnce(context.Background())
-
-	q := url.Values{}
-	q.Set("requeued", rawPath)
-	http.Redirect(w, r, "/worker?"+q.Encode(), http.StatusSeeOther)
-}
-
-func (h *Handler) normalizationFilesRequeueStale(w http.ResponseWriter, r *http.Request) {
-	worker := h.gpuWorkerView(r.Context())
-	gpuStatus := h.gpuStatus(r.Context(), worker)
-	openQueue, err := h.DB.ListOpenGPUQueueItems(1000)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("listing GPU queue failed: %v", err), http.StatusInternalServerError)
-		return
-	}
-	activeRawPaths, activeUnits := activeGPUJobIndexes(gpuStatus.Jobs)
-	requeued := 0
-	for _, item := range openQueue {
-		if item.Status != "running" {
-			continue
-		}
-		if activeRawPaths[item.RawPath] || activeUnits[item.UnitName] {
-			continue
-		}
-		if err := h.DB.RequeueRunningGPUJob(item.RawPath, "requeued stale job because no active worker job matched it"); err != nil {
-			log.Printf("requeueing stale GPU job %s failed: %v", item.RawPath, err)
-			continue
-		}
-		if err := h.saveGPUJobLog(gpuJobView{
-			UnitName:    firstNonEmptyString(item.UnitName, gpuTranscodeUnitName(item.RawPath)),
-			RawPath:     item.RawPath,
-			Description: "streamctl GPU transcode " + item.RawPath,
-			ActiveState: "queued",
-		}); err != nil {
-			log.Printf("saving requeued stale GPU job %s failed: %v", item.RawPath, err)
-		}
-		requeued++
-	}
-	if requeued > 0 {
-		go h.dispatchGPUQueueOnce(context.Background())
-	}
-	q := url.Values{}
-	q.Set("requeued_stale", strconv.Itoa(requeued))
-	http.Redirect(w, r, "/worker?"+q.Encode(), http.StatusSeeOther)
-}
-
-func (h *Handler) normalizationFilesClearResolvedFailures(w http.ResponseWriter, r *http.Request) {
-	items, err := h.DB.ListFailedGPUQueueItems(1000)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("listing failed GPU jobs failed: %v", err), http.StatusInternalServerError)
-		return
-	}
-	cleared := 0
-	for _, item := range items {
-		if err := h.verifyNormalizedOutput(r.Context(), item.RawPath); err != nil {
-			continue
-		}
-		if err := h.DB.ResolveGPUQueueFailure(item.RawPath, "resolved failure; normalized output is ready"); err != nil {
-			log.Printf("clearing resolved failed GPU job %s failed: %v", item.RawPath, err)
-			continue
-		}
-		cleared++
-	}
-	q := url.Values{}
-	q.Set("cleared_failures", strconv.Itoa(cleared))
-	http.Redirect(w, r, "/worker?"+q.Encode(), http.StatusSeeOther)
-}
-
 func (h *Handler) gpuJobLogs(w http.ResponseWriter, r *http.Request) {
 	unit := strings.TrimPrefix(r.URL.Path, "/gpu-worker/logs/")
 	if !validGPUUnitName(unit) {
@@ -1251,19 +987,6 @@ func (h *Handler) gpuJobLogs(w http.ResponseWriter, r *http.Request) {
 		"Job":  job,
 		"Host": host,
 	})
-}
-
-func startRemoteGPUTranscode(ctx context.Context, host, command, rawPath string) (string, string, error) {
-	unitName := gpuTranscodeUnitName(rawPath)
-	remote := remoteGPUTranscodeCommand(unitName, command, rawPath)
-	args := sshArgs(host, remote)
-	cmd := exec.CommandContext(ctx, "ssh", args...)
-	out, err := cmd.CombinedOutput()
-	return unitName, string(out), err
-}
-
-func remoteGPUTranscodeCommand(unitName, command, rawPath string) string {
-	return remoteGPUJobCommand(unitName, "streamctl GPU transcode "+rawPath, rawPath, "exec "+shellQuote(command)+" "+shellQuote(rawPath))
 }
 
 // Both VM and container workers use this execution and status contract.
@@ -1347,9 +1070,6 @@ func (h *Handler) gpuStatus(ctx context.Context, worker gpuWorkerView) gpuStatus
 			if err := h.saveGPUJobLog(full); err != nil {
 				log.Printf("saving terminal GPU job %s failed: %v", unit, err)
 			}
-			if full.RawPath != "" {
-				h.markGPUQueueTerminal(ctx, full.RawPath, full)
-			}
 			h.destroyManagedGPUAfterTerminalJob(ctx, full)
 			go h.dispatchGPUQueueOnce(context.Background())
 		}
@@ -1377,11 +1097,7 @@ func (h *Handler) hydrateGPUJobFromCache(job *gpuJobView) {
 			return
 		}
 	}
-	item, err := h.DB.GetGPUQueueItemByUnitName(job.UnitName)
-	if err != nil {
-		return
-	}
-	job.RawPath = item.RawPath
+
 }
 
 func (h *Handler) appendCachedGPUJobs(status gpuStatusView) gpuStatusView {
@@ -1484,38 +1200,6 @@ func (h *Handler) gpuFileJob(ctx context.Context, host, unit string, includeJour
 	return job
 }
 
-func (h *Handler) monitorGPUJob(unitName, rawPath, host string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 48*time.Hour)
-	defer cancel()
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			log.Printf("GPU job monitor %s stopped: %v", unitName, ctx.Err())
-			return
-		case <-ticker.C:
-			job := h.gpuJob(ctx, host, unitName, false)
-			job.RawPath = rawPath
-			if err := h.saveGPUJobLog(job); err != nil {
-				log.Printf("saving GPU job %s status failed: %v", unitName, err)
-			}
-			if !isTerminalGPUJob(job) {
-				continue
-			}
-			full := h.gpuJob(ctx, host, unitName, true)
-			full.RawPath = rawPath
-			if err := h.saveGPUJobLog(full); err != nil {
-				log.Printf("saving GPU job %s journal failed: %v", unitName, err)
-			}
-			h.markGPUQueueTerminal(ctx, rawPath, full)
-			h.destroyManagedGPUAfterTerminalJob(ctx, full)
-			go h.dispatchGPUQueueOnce(context.Background())
-			return
-		}
-	}
-}
-
 func (h *Handler) saveGPUJobLog(job gpuJobView) error {
 	if strings.TrimSpace(job.UnitName) == "" {
 		return nil
@@ -1561,199 +1245,11 @@ func isBlockingGPUJob(job gpuJobView) bool {
 	return !isTerminalGPUJob(job)
 }
 
-func markNormalizationFilesProcessing(files []normalizationFileView, jobs []gpuJobView, queue []db.GPUJobQueueItem, nowProcessing gpuJobView) {
-	activeRawPaths, activeUnits := activeGPUJobIndexes(jobs)
-	activeByRawPath := map[string]gpuJobView{}
-	for _, job := range jobs {
-		if strings.TrimSpace(job.RawPath) == "" || isTerminalGPUJob(job) {
-			continue
-		}
-		activeByRawPath[job.RawPath] = job
-	}
-	queuedByRawPath := map[string]db.GPUJobQueueItem{}
-	for _, item := range queue {
-		if strings.TrimSpace(item.RawPath) == "" {
-			continue
-		}
-		queuedByRawPath[item.RawPath] = item
-	}
-	for i := range files {
-		if item, ok := queuedByRawPath[files[i].RawPath]; ok {
-			files[i].ProcessingUnit = firstNonEmptyString(item.UnitName, gpuTranscodeUnitName(item.RawPath))
-			files[i].ProcessingState = item.Status
-			if item.Status == "running" {
-				files[i].ProcessingStale = !activeRawPaths[item.RawPath] && !activeUnits[item.UnitName]
-				if files[i].ProcessingStale {
-					files[i].ProcessingState = "stale"
-				} else if isSameGPUJob(item.RawPath, item.UnitName, nowProcessing) {
-					files[i].ProcessingNow = true
-				}
-			}
-			continue
-		}
-		if job, ok := activeByRawPath[files[i].RawPath]; ok {
-			files[i].ProcessingUnit = job.UnitName
-			files[i].ProcessingState = firstNonEmptyString(job.ActiveState, "queued")
-			files[i].ProcessingNow = isSameGPUJob(files[i].RawPath, job.UnitName, nowProcessing)
-		}
-	}
-}
-
-func isSameGPUJob(rawPath, unitName string, job gpuJobView) bool {
-	if strings.TrimSpace(job.RawPath) != "" && job.RawPath == rawPath {
-		return true
-	}
-	if strings.TrimSpace(job.UnitName) != "" && job.UnitName == unitName {
-		return true
-	}
-	return false
-}
-
-func activeGPUJobIndexes(jobs []gpuJobView) (map[string]bool, map[string]bool) {
-	rawPaths := map[string]bool{}
-	units := map[string]bool{}
-	for _, job := range jobs {
-		if isTerminalGPUJob(job) {
-			continue
-		}
-		if strings.TrimSpace(job.RawPath) != "" {
-			rawPaths[job.RawPath] = true
-		}
-		if strings.TrimSpace(job.UnitName) != "" {
-			units[job.UnitName] = true
-		}
-	}
-	return rawPaths, units
-}
-
-func countStaleNormalizationFiles(files []normalizationFileView) int {
-	count := 0
-	for _, file := range files {
-		if file.ProcessingStale {
-			count++
-		}
-	}
-	return count
-}
-
-func countGPUQueueStates(items []db.GPUJobQueueItem) (int, int) {
-	queued := 0
-	running := 0
-	for _, item := range items {
-		switch item.Status {
-		case "queued":
-			queued++
-		case "running":
-			running++
-		}
-	}
-	return queued, running
-}
-
-func (h *Handler) gpuQueueDashboard(jobs []gpuJobView, nowProcessing gpuJobView) (gpuQueueDashboardView, error) {
-	counts, err := h.DB.GPUQueueStatusCounts()
-	if err != nil {
-		return gpuQueueDashboardView{}, err
-	}
-	items, err := h.DB.ListVisibleGPUQueueItems(30)
-	if err != nil {
-		return gpuQueueDashboardView{}, err
-	}
-	activeRawPaths, activeUnits := activeGPUJobIndexes(jobs)
-	dashboard := gpuQueueDashboardView{
-		Queued:    counts["queued"],
-		Running:   counts["running"],
-		Failed:    counts["failed"],
-		Finished:  counts["finished"],
-		Cancelled: counts["cancelled"],
-	}
-	dashboard.HasOpenJobs = dashboard.Queued > 0 || dashboard.Running > 0
-	for _, item := range items {
-		row := gpuQueueItemView{
-			ID:            item.ID,
-			RawPath:       item.RawPath,
-			UnitName:      firstNonEmptyString(item.UnitName, gpuTranscodeUnitName(item.RawPath)),
-			Status:        item.Status,
-			AttemptCount:  item.AttemptCount,
-			LastAttemptAt: formatOptionalTime(item.LastAttemptAt),
-			LastError:     item.LastError,
-			CreatedAt:     item.CreatedAt.Format("2006-01-02 15:04"),
-			StartedAt:     formatOptionalTime(item.StartedAt),
-			FinishedAt:    formatOptionalTime(item.FinishedAt),
-			ProcessingNow: item.Status == "running" && isSameGPUJob(item.RawPath, item.UnitName, nowProcessing),
-		}
-		if item.Status == "running" {
-			row.Stale = !activeRawPaths[item.RawPath] && !activeUnits[item.UnitName]
-			if row.Stale {
-				dashboard.HasStaleJobs = true
-			}
-		}
-		if strings.TrimSpace(row.LastError) != "" && dashboard.LastError == "" {
-			dashboard.LastError = row.LastError
-		}
-		dashboard.Items = append(dashboard.Items, row)
-	}
-	return dashboard, nil
-}
-
 func formatOptionalTime(t *time.Time) string {
 	if t == nil {
 		return ""
 	}
 	return t.Format("2006-01-02 15:04")
-}
-
-func currentNormalizationGPUJob(jobs []gpuJobView) gpuJobView {
-	for _, job := range jobs {
-		if isBlockingGPUJob(job) && strings.TrimSpace(job.RawPath) != "" {
-			return job
-		}
-	}
-	return gpuJobView{}
-}
-
-func (h *Handler) reconcileStaleGPUQueue(worker gpuWorkerView, jobs []gpuJobView, queue []db.GPUJobQueueItem) []db.GPUJobQueueItem {
-	activeRawPaths, activeUnits := activeGPUJobIndexes(jobs)
-	changed := false
-	for _, item := range queue {
-		if item.Status != "running" {
-			continue
-		}
-		workerUnavailable := managedGPUWorkerDefinitelyUnavailable(worker)
-		if !workerUnavailable && (activeRawPaths[item.RawPath] || activeUnits[item.UnitName]) {
-			continue
-		}
-		// A managed worker can temporarily report "starting" when an SSH probe
-		// times out even though its transcode is still running. Only requeue when
-		// the provider confirms that the worker is gone, or when an active worker
-		// confirms that the job itself is gone.
-		if worker.Managed && worker.Status != "active" && !workerUnavailable {
-			continue
-		}
-		if err := h.DB.RequeueRunningGPUJob(item.RawPath, fmt.Sprintf("requeued stale job because worker status was %q", worker.Status)); err != nil {
-			log.Printf("requeueing stale GPU job %s failed: %v", item.RawPath, err)
-			continue
-		}
-		if err := h.saveGPUJobLog(gpuJobView{
-			UnitName:    firstNonEmptyString(item.UnitName, gpuTranscodeUnitName(item.RawPath)),
-			RawPath:     item.RawPath,
-			Description: "streamctl GPU transcode " + item.RawPath,
-			ActiveState: "queued",
-		}); err != nil {
-			log.Printf("saving stale GPU requeue log %s failed: %v", item.RawPath, err)
-		}
-		log.Printf("requeued stale GPU job %s worker_status=%q", item.RawPath, worker.Status)
-		changed = true
-	}
-	if !changed {
-		return queue
-	}
-	refreshed, err := h.DB.ListOpenGPUQueueItems(1000)
-	if err != nil {
-		log.Printf("refreshing GPU queue after stale reconciliation failed: %v", err)
-		return queue
-	}
-	return refreshed
 }
 
 func managedGPUWorkerDefinitelyUnavailable(worker gpuWorkerView) bool {
@@ -1766,17 +1262,6 @@ func managedGPUWorkerDefinitelyUnavailable(worker gpuWorkerView) bool {
 	default:
 		return false
 	}
-}
-
-func unprocessedNormalizationFiles(files []normalizationFileView) []normalizationFileView {
-	out := files[:0]
-	for _, file := range files {
-		if file.Processed {
-			continue
-		}
-		out = append(out, file)
-	}
-	return out
 }
 
 func (h *Handler) gpuQueueDispatcher() {
@@ -1796,31 +1281,20 @@ func (h *Handler) dispatchGPUQueueOnce(ctx context.Context) {
 	}
 	worker := h.gpuWorkerView(ctx)
 	if worker.Managed && worker.Status != "active" {
-		queuedCount := 0
-		if openQueue, err := h.DB.ListOpenGPUQueueItems(1000); err != nil {
-			log.Printf("listing GPU queue for stale reconciliation failed: %v", err)
-		} else {
-			openQueue = h.reconcileStaleGPUQueue(worker, nil, openQueue)
-			queuedCount, _ = countGPUQueueStates(openQueue)
-		}
 		h.reconcileUnavailableRenderQueue(worker)
 		h.reconcileUnavailableProxyQueue(worker)
+		queued := 0
+		if counts, err := h.DB.RenderQueueStatusCounts(); err == nil {
+			queued += counts["queued"]
+		}
 		if counts, err := h.DB.ProductionProxyQueue(1); err == nil {
-			queuedCount += counts.Queued
+			queued += counts.Queued
 		}
-		if renderCounts, err := h.DB.RenderQueueStatusCounts(); err != nil {
-			log.Printf("counting queued render jobs failed: %v", err)
-		} else {
-			queuedCount += renderCounts["queued"]
-		}
-		if queuedCount > 0 && h.hasRunPodToken() && worker.Status == "not found" {
+		if queued > 0 && h.hasRunPodToken() && worker.Status == "not found" {
 			if err := h.ensureRunPodWorker(ctx, h.RunPodGPUType); err != nil {
-				log.Printf("creating RunPod worker for queued GPU jobs failed: %v", err)
-			} else {
-				log.Printf("creating RunPod worker for %d queued GPU job(s)", queuedCount)
+				log.Printf("creating RunPod worker: %v", err)
 			}
 		}
-		log.Printf("GPU queue dispatch skipped: worker status=%q error=%q", worker.Status, worker.Error)
 		return
 	}
 	host := strings.TrimSpace(h.GPUWorkerHost)
@@ -1828,100 +1302,29 @@ func (h *Handler) dispatchGPUQueueOnce(ctx context.Context) {
 		host = worker.SSHHost
 	}
 	if host == "" {
-		log.Printf("GPU queue dispatch skipped: worker has no SSH host")
 		return
 	}
 	status := h.gpuStatus(ctx, worker)
-	if status.Error != "" {
-		log.Printf("GPU queue status warning: %s", status.Error)
-	}
 	h.reconcileRenderJobs(ctx, host, status.Jobs, status.Available && status.Error == "")
 	h.reconcileProxyJobs(ctx)
-	if counts, err := h.DB.ProductionProxyQueue(1); err != nil || counts.Running > 0 {
-		return
-	}
 	if !status.Available || status.Error != "" {
 		return
 	}
-	if counts, err := h.DB.RenderQueueStatusCounts(); err != nil || counts["running"] > 0 {
-		// A dashboard snapshot is not a queue lock. Keep the worker serial
-		// even when its running attempt is absent from the recent-job list.
+	if counts, err := h.DB.ProductionProxyQueue(1); err != nil || counts.Running > 0 {
 		return
 	}
-	openQueue, err := h.DB.ListOpenGPUQueueItems(1000)
-	if err != nil {
-		log.Printf("listing GPU queue for stale reconciliation failed: %v", err)
-	} else {
-		h.reconcileStaleGPUQueue(worker, status.Jobs, openQueue)
+	if counts, err := h.DB.RenderQueueStatusCounts(); err != nil || counts["running"] > 0 {
+		return
 	}
 	for _, job := range status.Jobs {
 		if isBlockingGPUJob(job) {
-			log.Printf("GPU queue dispatch skipped: active job %s raw=%s active=%s result=%s", job.UnitName, job.RawPath, job.ActiveState, job.Result)
 			return
 		}
 	}
 	if h.dispatchNextProxy(ctx, host) {
 		return
 	}
-	item, err := h.DB.NextQueuedGPUJob()
-	if err != nil {
-		if !errors.Is(err, sql.ErrNoRows) {
-			log.Printf("loading next queued GPU job failed: %v", err)
-		}
-		if errors.Is(err, sql.ErrNoRows) && h.dispatchNextRender(ctx, host) {
-			return
-		}
-		if errors.Is(err, sql.ErrNoRows) {
-			log.Printf("GPU queue dispatch skipped: no queued jobs")
-		}
-		return
-	}
-	if out, err := waitForRemoteSSH(ctx, host, 2*time.Minute); err != nil {
-		log.Printf("GPU worker SSH readiness failed for queued %s: %v: %s", item.RawPath, err, strings.TrimSpace(out))
-		return
-	}
-	command := strings.TrimSpace(h.GPUWorkerCommand)
-	unitName, out, err := startRemoteGPUTranscode(ctx, host, command, item.RawPath)
-	if err != nil {
-		errText := strings.TrimSpace(fmt.Sprintf("%v: %s", err, strings.TrimSpace(out)))
-		log.Printf("GPU transcode submit queued %s failed: %s", item.RawPath, errText)
-		if err := h.DB.MarkGPUQueueFinished(item.RawPath, "failed", errText); err != nil {
-			log.Printf("marking queued GPU job %s failed: %v", item.RawPath, err)
-		}
-		return
-	}
-	log.Printf("GPU transcode queued %s submitted as %s: %s", item.RawPath, unitName, strings.TrimSpace(out))
-	if err := h.DB.MarkGPUQueueRunning(item.ID, unitName); err != nil {
-		log.Printf("marking GPU queue item %d running failed: %v", item.ID, err)
-	}
-	if err := h.saveGPUJobLog(gpuJobView{
-		UnitName:    unitName,
-		RawPath:     item.RawPath,
-		Host:        host,
-		Description: "streamctl GPU transcode " + item.RawPath,
-		ActiveState: "running",
-		SubState:    "running",
-	}); err != nil {
-		log.Printf("saving GPU job %s failed: %v", unitName, err)
-	}
-	go h.monitorGPUJob(unitName, item.RawPath, host)
-}
-
-func (h *Handler) markGPUQueueTerminal(ctx context.Context, rawPath string, job gpuJobView) {
-	status := "finished"
-	if job.ActiveState == "failed" || (job.Result != "" && job.Result != "success") {
-		status = "failed"
-	}
-	lastError := ""
-	if status == "failed" {
-		lastError = firstNonEmptyString(strings.TrimSpace(job.Error), gpuFailureJournalSummary(job.Journal), strings.TrimSpace(job.Result), strings.TrimSpace(job.ActiveState))
-	} else if err := h.verifyNormalizedOutput(ctx, rawPath); err != nil {
-		status = "failed"
-		lastError = "post-processing verification failed: " + err.Error()
-	}
-	if err := h.DB.MarkGPUQueueFinished(rawPath, status, lastError); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		log.Printf("marking GPU queue %s %s failed: %v", rawPath, status, err)
-	}
+	h.dispatchNextRender(ctx, host)
 }
 
 func gpuFailureJournalSummary(journal string) string {
@@ -1947,15 +1350,6 @@ func (h *Handler) destroyManagedGPUAfterTerminalJob(ctx context.Context, job gpu
 	failed := job.ActiveState == "failed" || (job.Result != "" && job.Result != "success")
 	shouldDestroy := failed || h.GPUDestroyAfterJob
 	if !shouldDestroy {
-		return
-	}
-	openQueue, err := h.DB.ListOpenGPUQueueItems(1)
-	if err != nil {
-		log.Printf("GPU worker cleanup skipped after job %s: checking queue failed: %v", job.UnitName, err)
-		return
-	}
-	if len(openQueue) > 0 {
-		log.Printf("GPU worker cleanup skipped after job %s: queue still has open work", job.UnitName)
 		return
 	}
 	renderCounts, err := h.DB.RenderQueueStatusCounts()
@@ -2154,41 +1548,12 @@ func appendGPUError(existing string, err error) string {
 	return existing + "; " + err.Error()
 }
 
-func gpuTranscodeUnitName(rawPath string) string {
-	sum := sha256.Sum256([]byte(rawPath))
-	hash := hex.EncodeToString(sum[:])[:12]
-	base := filepath.Base(rawPath)
-	base = strings.TrimSuffix(base, filepath.Ext(base))
-	var safe strings.Builder
-	for _, r := range strings.ToLower(base) {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
-			safe.WriteRune(r)
-		} else if safe.Len() == 0 || safe.String()[safe.Len()-1] != '-' {
-			safe.WriteByte('-')
-		}
-		if safe.Len() >= 36 {
-			break
-		}
-	}
-	name := strings.Trim(safe.String(), "-")
-	if name == "" {
-		name = "job"
-	}
-	return "streamctl-gpu-" + name + "-" + hash + ".service"
-}
-
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
 func (h *Handler) gpuWorkerConfigured() bool {
-	if strings.TrimSpace(h.GPUWorkerHost) != "" && strings.TrimSpace(h.GPUWorkerCommand) != "" {
-		return true
-	}
-	if h.hasRunPodToken() && strings.TrimSpace(h.GPUWorkerCommand) != "" {
-		return true
-	}
-	return strings.TrimSpace(h.DOTokenFile) != "" && strings.TrimSpace(h.GPUWorkerCommand) != ""
+	return strings.TrimSpace(h.GPUWorkerHost) != "" || h.hasRunPodToken() || strings.TrimSpace(h.DOTokenFile) != ""
 }
 
 func (h *Handler) gpuWorkerSSHHost(ctx context.Context) (string, error) {
@@ -2537,9 +1902,8 @@ func (h *Handler) ensureRunPodWorker(ctx context.Context, gpuType string) error 
 			"printf '%s\n' \"$SSH_PUBLIC_KEY\" > /root/.ssh/authorized_keys",
 			"chmod 700 /root/.ssh && chmod 600 /root/.ssh/authorized_keys",
 			"printf '%s' \"$RCLONE_CONFIG_B64\" | base64 -d > /root/rclone.conf",
-			"printf '%s' \"$TRANSCODE_SCRIPT_B64\" | base64 -d > /root/transcode-nvenc.sh",
 			"printf '%s' \"$RENDER_SCRIPT_B64\" | base64 -d > /root/render-from-spaces.py",
-			"chmod 400 /root/rclone.conf && chmod 755 /root/transcode-nvenc.sh /root/render-from-spaces.py",
+			"chmod 400 /root/rclone.conf && chmod 755 /root/render-from-spaces.py",
 			"curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/root/.local/bin sh",
 			"git clone " + shellQuote(confRenderRepository) + " /root/conf-render",
 			"git -C /root/conf-render checkout " + shellQuote(confRenderRevision),
@@ -2586,7 +1950,6 @@ func (h *Handler) runpodWorkerEnv(sshPublicKey string) (map[string]string, error
 		"NVIDIA_DRIVER_CAPABILITIES": "compute,utility,video",
 		"SSH_PUBLIC_KEY":             strings.TrimSpace(sshPublicKey),
 		"RCLONE_CONFIG_B64":          base64.StdEncoding.EncodeToString(rcloneConfig),
-		"TRANSCODE_SCRIPT_B64":       base64.StdEncoding.EncodeToString([]byte(gpuTranscodeScript())),
 		"RENDER_SCRIPT_B64":          base64.StdEncoding.EncodeToString([]byte(renderWorkerScript())),
 	}, nil
 }
@@ -2759,7 +2122,6 @@ func (h *Handler) gpuWorkerUserData() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("reading rclone config: %w", err)
 	}
-	transcodeScript := gpuTranscodeScript()
 	renderScript := renderWorkerScript()
 	return fmt.Sprintf(`#!/usr/bin/env bash
 set -euxo pipefail
@@ -2770,14 +2132,10 @@ install -d -m 0700 /root
 base64 -d >/root/rclone.conf <<'STREAMCTL_RCLONE'
 %s
 STREAMCTL_RCLONE
-base64 -d >/root/transcode-nvenc.sh <<'STREAMCTL_SCRIPT'
-%s
-STREAMCTL_SCRIPT
 base64 -d >/root/render-from-spaces.py <<'STREAMCTL_RENDER_SCRIPT'
 %s
 STREAMCTL_RENDER_SCRIPT
 chmod 0400 /root/rclone.conf
-chmod 0755 /root/transcode-nvenc.sh
 chmod 0755 /root/render-from-spaces.py
 curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/root/.local/bin sh
 git clone %s /root/conf-render
@@ -2788,7 +2146,7 @@ timeout --kill-after=30s 180s /root/render-from-spaces.py --check
 echo "$DROPLET_ID" >/root/droplet-id
 touch /root/.streamctl-worker-ready
 echo 'streamctl GPU worker ready'
-`, base64.StdEncoding.EncodeToString(rcloneConfig), base64.StdEncoding.EncodeToString([]byte(transcodeScript)), base64.StdEncoding.EncodeToString([]byte(renderScript)), shellQuote(confRenderRepository), shellQuote(confRenderRevision), confRenderCompatibilityCommand()), nil
+`, base64.StdEncoding.EncodeToString(rcloneConfig), base64.StdEncoding.EncodeToString([]byte(renderScript)), shellQuote(confRenderRepository), shellQuote(confRenderRevision), confRenderCompatibilityCommand()), nil
 }
 
 func (h *Handler) gpuWorkerTag() string {
@@ -2809,196 +2167,7 @@ func firstNonEmptyString(values ...string) string {
 	return ""
 }
 
-func gpuTranscodeScript() string {
-	return `#!/usr/bin/env bash
-set -euo pipefail
-
-if [ $# -ne 1 ]; then
-  echo "usage: $0 <conference>/recordings/edits/<path>/<file.mp4>" >&2
-  exit 2
-fi
-
-raw_path="${1#/}"
-remote="${SPACES_REMOTE:-spaces:btcpp}"
-workroot="${WORKDIR:-/tmp/streamctl-transcode}"
-video_bitrate="${VIDEO_BITRATE:-6800k}"
-audio_bitrate="${AUDIO_BITRATE:-160k}"
-rclone_stats="${RCLONE_STATS:-30s}"
-rclone_multithread_streams="${RCLONE_MULTI_THREAD_STREAMS:-16}"
-rclone_multithread_cutoff="${RCLONE_MULTI_THREAD_CUTOFF:-256M}"
-rclone_transfers="${RCLONE_TRANSFERS:-1}"
-rclone_checkers="${RCLONE_CHECKERS:-8}"
-
-case "$raw_path" in
-  */recordings/edits/*) ;;
-  *)
-    echo "path must be <conference>/recordings/edits/<path>/<file>" >&2
-    exit 2
-    ;;
-esac
-
-conference="${raw_path%%/recordings/edits/*}"
-relative_path="${raw_path#${conference}/recordings/edits/}"
-filename="${raw_path##*/}"
-normalized_path="${conference}/recordings/normalized/${relative_path}"
-
-remote_path() {
-  case "$remote" in
-    *:|*/) printf '%s%s' "$remote" "$1" ;;
-    *) printf '%s/%s' "$remote" "$1" ;;
-  esac
-}
-
-rclone_copyto() {
-  rclone copyto \
-    --stats "$rclone_stats" \
-    --stats-one-line \
-    --transfers "$rclone_transfers" \
-    --checkers "$rclone_checkers" \
-    "$@"
-}
-
-rclone_download() {
-  rclone copyto \
-    --stats "$rclone_stats" \
-    --stats-one-line \
-    --transfers 1 \
-    --checkers "$rclone_checkers" \
-    --multi-thread-streams "$rclone_multithread_streams" \
-    --multi-thread-cutoff "$rclone_multithread_cutoff" \
-    "$@"
-}
-
-safe_clean_workroot() {
-  case "$workroot" in
-    /tmp/streamctl-transcode|/tmp/streamctl-transcode/*) ;;
-    *)
-      echo "refusing to clean unsafe WORKDIR: $workroot" >&2
-      exit 2
-      ;;
-  esac
-  mkdir -p "$workroot"
-  find "$workroot" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
-}
-
-export RCLONE_CONFIG="${RCLONE_CONFIG:-/root/rclone.conf}"
-safe_clean_workroot
-workdir="${workroot}/${filename}.job-$$"
-mkdir -p "$workdir"
-cleanup() {
-  rm -rf -- "$workdir"
-}
-trap cleanup EXIT
-raw_file="${workdir}/${filename}"
-out_file="${workdir}/${filename%.mp4}.normalized.mp4"
-ready_file="${workdir}/${filename}.ready.json"
-
-echo "transcode: downloading ${raw_path}"
-rclone_download "$(remote_path "$raw_path")" "$raw_file"
-
-echo "transcode: encoding ${raw_path} -> ${normalized_path}"
-rm -f -- "$out_file"
-ffmpeg -hide_banner -loglevel error -stats_period 30 -progress pipe:1 -y \
-  -i "$raw_file" \
-  -map 0:v:0 -map 0:a:0 -dn -sn \
-  -c:v h264_nvenc -preset p4 -profile:v high -pix_fmt yuv420p \
-  -r 30 -g 60 -keyint_min 60 -sc_threshold 0 \
-  -b:v "$video_bitrate" -maxrate "$video_bitrate" -bufsize "${VIDEO_BUFSIZE:-13600k}" \
-  -c:a aac -b:a "$audio_bitrate" -ar 48000 -ac 2 \
-  -movflags +faststart \
-  "$out_file"
-
-echo "transcode: verifying ${out_file}"
-ffprobe -v error -show_streams "$out_file" >/dev/null
-
-cat > "$ready_file" <<EOF
-{
-  "raw_path": "${raw_path}",
-  "normalized_path": "${normalized_path}",
-  "video_bitrate": "${video_bitrate}",
-  "audio_bitrate": "${audio_bitrate}",
-  "encoder": "h264_nvenc",
-  "verified_by": "ffprobe",
-  "status": "ready"
-}
-EOF
-
-echo "transcode: uploading ${normalized_path}"
-rclone_copyto "$out_file" "$(remote_path "$normalized_path")"
-rclone_copyto "$ready_file" "$(remote_path "${normalized_path}.ready.json")"
-
-echo "transcode: ready ${normalized_path}"
-`
-}
-
 func renderWorkerScript() string { return renderWorkerScriptText }
-
-func (h *Handler) listNormalizationFiles(ctx context.Context) ([]normalizationFileView, error) {
-	confs, err := h.listSpacesConferences(ctx)
-	if err != nil {
-		return nil, err
-	}
-	var out []normalizationFileView
-	var outMu sync.Mutex
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, 8)
-	for _, conf := range confs {
-		conf := conf
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }()
-			case <-ctx.Done():
-				return
-			}
-			name := strings.TrimSuffix(strings.TrimSuffix(conf.Path, "/recordings/"), "/")
-			rawPrefix := name + "/recordings/edits/"
-			rawFiles, err := h.listSpacesFilesRecursive(ctx, rawPrefix)
-			if err != nil {
-				return
-			}
-			normalizedPrefix := name + "/recordings/normalized/"
-			normalizedFiles, err := h.listSpacesFilesRecursive(ctx, normalizedPrefix)
-			if err != nil {
-				normalizedFiles = nil
-			}
-			processed := make(map[string]bool, len(normalizedFiles))
-			for _, f := range normalizedFiles {
-				processed[f.Path] = true
-			}
-			var files []normalizationFileView
-			for _, f := range rawFiles {
-				normalizedPath, err := normalizedRecordingPath(f.Path)
-				if err != nil {
-					continue
-				}
-				files = append(files, normalizationFileView{
-					Conference:     name,
-					Name:           f.Name,
-					RawPath:        f.Path,
-					NormalizedPath: normalizedPath,
-					Processed:      processed[normalizedPath],
-				})
-			}
-			if len(files) == 0 {
-				return
-			}
-			outMu.Lock()
-			out = append(out, files...)
-			outMu.Unlock()
-		}()
-	}
-	wg.Wait()
-	sort.Slice(out, func(i, j int) bool {
-		if strings.ToLower(out[i].Conference) == strings.ToLower(out[j].Conference) {
-			return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name)
-		}
-		return strings.ToLower(out[i].Conference) < strings.ToLower(out[j].Conference)
-	})
-	return out, nil
-}
 
 func (h *Handler) listSpacesFilesOnly(ctx context.Context, prefix string) ([]spacesEntry, error) {
 	_, files, err := h.listSpacesPrefix(ctx, prefix)
@@ -3026,19 +2195,6 @@ func (h *Handler) listSpacesFilesRecursive(ctx context.Context, prefix string) (
 		return strings.ToLower(files[i].Path) < strings.ToLower(files[j].Path)
 	})
 	return files, nil
-}
-
-func normalizedRecordingPath(rawPath string) (string, error) {
-	rawPath = strings.TrimSpace(strings.ReplaceAll(rawPath, "\\", "/"))
-	parts := strings.Split(rawPath, "/")
-	if len(parts) < 4 || parts[1] != "recordings" || parts[2] != "edits" {
-		return "", fmt.Errorf("path must be <conference>/recordings/edits/[path/]<file>")
-	}
-	file := parts[len(parts)-1]
-	if !isVideoFile(file) {
-		return "", fmt.Errorf("path must be a video file")
-	}
-	return parts[0] + "/recordings/normalized/" + strings.Join(parts[3:], "/"), nil
 }
 
 // ---------- Nostr ----------
@@ -3441,43 +2597,6 @@ func (h *Handler) spacesFileExists(ctx context.Context, filePath string) (bool, 
 	return false, nil
 }
 
-func (h *Handler) verifyNormalizedOutput(ctx context.Context, rawPath string) error {
-	normalizedPath, err := normalizedRecordingPath(rawPath)
-	if err != nil {
-		return err
-	}
-	exists, err := h.spacesFileExists(ctx, normalizedPath)
-	if err != nil {
-		return fmt.Errorf("checking normalized object: %w", err)
-	}
-	if !exists {
-		return fmt.Errorf("normalized object missing: %s", normalizedPath)
-	}
-	readyPath := normalizedPath + ".ready.json"
-	ready, err := h.rcloneCat(ctx, readyPath)
-	if err != nil {
-		return fmt.Errorf("reading ready marker %s: %w", readyPath, err)
-	}
-	var marker struct {
-		RawPath        string `json:"raw_path"`
-		NormalizedPath string `json:"normalized_path"`
-		Status         string `json:"status"`
-	}
-	if err := json.Unmarshal(ready, &marker); err != nil {
-		return fmt.Errorf("parsing ready marker %s: %w", readyPath, err)
-	}
-	if marker.Status != "ready" {
-		return fmt.Errorf("ready marker status is %q", marker.Status)
-	}
-	if strings.Trim(marker.RawPath, "/") != strings.Trim(rawPath, "/") {
-		return fmt.Errorf("ready marker raw path mismatch: %q", marker.RawPath)
-	}
-	if strings.Trim(marker.NormalizedPath, "/") != strings.Trim(normalizedPath, "/") {
-		return fmt.Errorf("ready marker normalized path mismatch: %q", marker.NormalizedPath)
-	}
-	return nil
-}
-
 func (h *Handler) remotePath(prefix string) string {
 	remote := strings.TrimRight(strings.TrimSpace(h.Remote), "/")
 	if strings.HasSuffix(remote, ":") || prefix == "" {
@@ -3506,52 +2625,6 @@ func bitratesJSON(videoDir string, files []string) template.JS {
 		return template.JS("{}")
 	}
 	return template.JS(b)
-}
-
-func (h *Handler) validateCachedPlaylist(videos []string) error {
-	var paths []string
-	var labels []string
-	for _, v := range videos {
-		path := h.localClipPath(v)
-		if _, err := os.Stat(path); err != nil {
-			if errors.Is(err, os.ErrNotExist) && isRemoteClip(v) {
-				continue
-			}
-			return fmt.Errorf("checking %s: %w", v, err)
-		}
-		paths = append(paths, path)
-		labels = append(labels, v)
-	}
-	if len(paths) < 2 {
-		return nil
-	}
-	return probe.ValidatePlaylistPaths(paths, labels)
-}
-
-func (h *Handler) validateNormalizedStreamVideos(ctx context.Context, videos []string) error {
-	if strings.TrimSpace(h.Remote) == "" {
-		return nil
-	}
-	for _, v := range videos {
-		if !isRemoteClip(v) {
-			continue
-		}
-		clean := strings.Trim(strings.ReplaceAll(v, "\\", "/"), "/")
-		if strings.Contains(clean, "/recordings/normalized/") {
-			return fmt.Errorf("%s is a normalized output path; schedule the original <conference>/recordings/edits/... path so streamctl can manage cache cleanup and prefetching", v)
-		}
-		if !strings.Contains(clean, "/recordings/edits/") {
-			return fmt.Errorf("%s must be under <conference>/recordings/edits/... to use the normalized GPU workflow", v)
-		}
-		if err := h.verifyNormalizedOutput(ctx, clean); err != nil {
-			normalizedPath, pathErr := normalizedRecordingPath(clean)
-			if pathErr != nil {
-				return fmt.Errorf("%s is not a valid recording path: %w", v, pathErr)
-			}
-			return fmt.Errorf("%s is not ready for scheduling: %w. Process it from Normalize first; expected normalized output is %s", v, err, normalizedPath)
-		}
-	}
-	return nil
 }
 
 func (h *Handler) localClipPath(source string) string {
