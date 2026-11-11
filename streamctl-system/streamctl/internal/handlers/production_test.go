@@ -55,12 +55,12 @@ func TestProductionWorkspaceLoadsCandidatesAndCuts(t *testing.T) {
 		}}},
 	}
 	response := httptest.NewRecorder()
-	h.productionTimestamp(response, httptest.NewRequest(http.MethodGet, "/production/timestamp?conference=toronto", nil))
+	h.productionTimestamp(response, httptest.NewRequest(http.MethodGet, "/production/cuts?conference=toronto", nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	for _, want := range []string{"Timestamp talks", "Conference workspace", `value="toronto"`, "selected", `onchange="this.form.submit()"`, `/production/timestamp?conference=toronto`, "A useful talk", "Day 1", "Main", "Wed, Jul 22, 2026", "10:00 AM–10:30 AM", "1 cut"} {
+	for _, want := range []string{"Cuts", "Conference workspace", `value="toronto"`, "selected", `onchange="this.form.submit()"`, `/production/cuts?conference=toronto`, "A useful talk", "Day 1", "Main", "Wed, Jul 22, 2026", "10:00 AM–10:30 AM", "1 cut"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("workspace omitted %q: %s", want, body)
 		}
@@ -113,7 +113,7 @@ func TestProductionTalksFollowDayStageTimeOrder(t *testing.T) {
 func TestProductionTimestampStartsWithConferenceDropdown(t *testing.T) {
 	h := &Handler{funcs: template.FuncMap{}, BTCPP: productionCandidatesStub{conferences: []btcppclient.Conference{{Tag: "toronto", Description: "Toronto++"}}}}
 	response := httptest.NewRecorder()
-	h.productionTimestamp(response, httptest.NewRequest(http.MethodGet, "/production/timestamp", nil))
+	h.productionTimestamp(response, httptest.NewRequest(http.MethodGet, "/production/cuts", nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -163,7 +163,7 @@ func TestProductionOverviewKeepsConferenceInNavigation(t *testing.T) {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	for _, want := range []string{"Conference workspace", `value="toronto" selected`, `/production/timestamp?conference=toronto`, "Production overview", "Media preparation", "Browse and prepare media", "1 / 2", "1 ready", "1 failed", "Ready to render", "Published recordings", ">2</div><div class=\"overview-detail\">published for this conference", "https://btcpp.dev/toronto/admin/recordings", "createProductionMediaBrowser", "mode:'manage'", "allowBucketRoot:true", "context.path===overviewRoot", `name="conference" value="toronto"`, `querySelector('#media-action-form input[name="conference"]').value`} {
+	for _, want := range []string{"Conference workspace", `value="toronto" selected`, `/production/cuts?conference=toronto`, "Production overview", "Media preparation", "Browse and prepare media", "1 / 2", "1 ready", "1 failed", "Ready to render", "Published recordings", ">2</div><div class=\"overview-detail\">published for this conference", "https://btcpp.dev/toronto/admin/recordings", "createProductionMediaBrowser", "mode:'manage'", "allowBucketRoot:true", "context.path===overviewRoot", `name="conference" value="toronto"`, `querySelector('#media-action-form input[name="conference"]').value`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("overview omitted %q: %s", want, body)
 		}
@@ -184,12 +184,12 @@ func TestProductionCutIsDedicatedPageWithTalkNavigation(t *testing.T) {
 		{TalkID: "talk-3", Title: "Third", Venue: "two", StartsAt: stringPointer("2025-01-01T12:00:00Z")},
 	}}}
 	response := httptest.NewRecorder()
-	h.productionCut(response, httptest.NewRequest(http.MethodGet, "/production/timestamp/cut?conference=toronto&talk_id=talk-2", nil))
+	h.productionCut(response, httptest.NewRequest(http.MethodGet, "/production/cuts/edit?conference=toronto&talk_id=talk-2", nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	for _, want := range []string{"Second", "Day 1", "Wed, Jan 1, 2025", "Talks", "11:00 AM–11:30 AM", "Speaker Two", "← Previous", "Skip →", "Save &amp; next →", `"inMs":1000`, `"index":1`, `"talks":[`, "Back to talks", "cutter-head", "position:sticky", "talk-meta-separator", "cutter-workspace", "grid-template-columns:minmax(0,2fr) minmax(360px,1fr)", "cutter-side", "media-preview-seek", "/production/media/info", "proxyPath", `preload="auto"`, "seekGlobal", "bindVideo", "Loading editing proxy", "sourceFilename", "selectRange", "selectRange(index,'inMs')", "selectRange(index,'outMs')", "inheritPreviewSource", "range-source", "openMedia(index)", "requestSubmit", "settledTimeMs", "initialSeekPending", "loadSource", "showTalk", "history.pushState", "currentTalk.talk_id", "Wait for the preview to finish seeking", "preview.ready", "rangeSetKey", "range[rangeSetKey(key)]=true", "if(!range){range=newRange(currentSource,currentSourceType)", "media-preview-fine", "media-preview-fine-row", "media-preview-play", "togglePlayback", "onMark:key=>mark", "fineWindowMs=5000", "seekNoticeMs=4000", "mediaSession", "queueSeek", "setPointerCapture", "seekInFlight", "queuedSeekTarget", "recover", "node.onseeked", "seek.onpointerdown", "finishCoarse", "requestAnimationFrame", "createProductionMediaBrowser", "createProductionMediaPreview", "media-preview-mark-in", "preview.setMarks", "removeRange", "addRange", "+ New segment", "needsMedia=!inheritPreviewSource(range)", "if(needsMedia)openMedia(activeRange)", "if(!ranges.length&&currentSource)ranges.push(newRange(currentSource,currentSourceType))", "activeRange=-1", "inSet", "outSet", "file.proxyStatus==='finished'", "No prepared video files here", "maxCachedVideos=2", "player.playing()", "Save & next →':'Save & close", "function talksURL()", "else location.href=talksURL()"} {
+	for _, want := range []string{"Second", "Day 1", "Wed, Jan 1, 2025", "Talks", "11:00 AM–11:30 AM", "Speaker Two", "← Previous", "Skip →", "Save &amp; next →", `"inMs":1000`, `"index":1`, `"talks":[`, "Back to cuts", "cutter-head", "position:sticky", "talk-meta-separator", "cutter-workspace", "grid-template-columns:minmax(0,2fr) minmax(360px,1fr)", "cutter-side", "media-preview-seek", "/production/media/info", "proxyPath", `preload="auto"`, "seekGlobal", "bindVideo", "Loading editing proxy", "sourceFilename", "selectRange", "selectRange(index,'inMs')", "selectRange(index,'outMs')", "inheritPreviewSource", "range-source", "openMedia(index)", "requestSubmit", "settledTimeMs", "initialSeekPending", "loadSource", "showTalk", "history.pushState", "currentTalk.talk_id", "Wait for the preview to finish seeking", "preview.ready", "rangeSetKey", "range[rangeSetKey(key)]=true", "if(!range){range=newRange(currentSource,currentSourceType)", "media-preview-fine", "media-preview-fine-row", "media-preview-play", "togglePlayback", "onMark:key=>mark", "fineWindowMs=5000", "seekNoticeMs=4000", "mediaSession", "queueSeek", "setPointerCapture", "seekInFlight", "queuedSeekTarget", "recover", "node.onseeked", "seek.onpointerdown", "finishCoarse", "requestAnimationFrame", "createProductionMediaBrowser", "createProductionMediaPreview", "media-preview-mark-in", "preview.setMarks", "removeRange", "addRange", "+ New segment", "needsMedia=!inheritPreviewSource(range)", "if(needsMedia)openMedia(activeRange)", "if(!ranges.length&&currentSource)ranges.push(newRange(currentSource,currentSourceType))", "activeRange=-1", "inSet", "outSet", "file.proxyStatus==='finished'", "No prepared video files here", "maxCachedVideos=2", "player.playing()", "Save & next →':'Save & close", "function talksURL()", "else location.href=talksURL()"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("cutter omitted %q: %s", want, body)
 		}

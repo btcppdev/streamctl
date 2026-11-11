@@ -7,19 +7,19 @@ const script=fs.readFileSync(path.join(__dirname,'../templates/production_clip_e
 const response=data=>({ok:true,headers:{get:()=> 'application/json'},json:async()=>data});
 
 function picker(talksError=''){
- const elements=new Map(),requests=[];
+ const elements=new Map(),requests=[],bodies=[];
  function element(){return {disabled:false,value:'',open:false,children:[],style:{},textContent:'',
   replaceChildren(){this.children=[]},appendChild(node){this.children.push(node)},append(...nodes){this.children.push(...nodes)},
-  add(node){this.children.push(node);if(!this.value)this.value=node.value},showModal(){this.open=true},addEventListener(){},
+  add(node){this.children.push(node);if(!this.value)this.value=node.value},showModal(){this.open=true},close(){this.open=false},addEventListener(){},
   querySelectorAll(){return this.children.flatMap(label=>label.children||[]).filter(node=>node.type==='checkbox'&&node.checked)}
  }}
  const get=id=>{if(!elements.has(id))elements.set(id,element());return elements.get(id)};
- const sandbox={URLSearchParams,Option:function(name,value){this.name=name;this.value=value},previewMode:'edit',conference:'berlin26',settings:{},basename:x=>x,
+ const sandbox={appendProductionRecordingTag:()=>{},URLSearchParams,Option:function(name,value){this.name=name;this.value=value},previewMode:'edit',conference:'berlin26',settings:{},basename:x=>x,
   document:{getElementById:get,querySelector:()=>({value:'csrf'}),createElement:element,createTextNode:x=>x},
-  fetch:async url=>url.includes('template-options')?response({templates:[{id:1,name:'Static A',needsTalk:false},{id:2,name:'Static B',needsTalk:false},{id:0,name:'Talk',needsTalk:true}],talks:[{talk_id:'a',title:'Talk A',eligible:true}],talksError}):new Promise(resolve=>requests.push(resolve))
+  fetch:async (url,options)=>url.includes('template-options')?response({templates:[{id:1,name:'Static A',needsTalk:false},{id:2,name:'Static B',needsTalk:false},{id:0,name:'Talk',needsTalk:true}],talks:[{talk_id:'a',title:'Talk A',eligible:true},{talk_id:'b',title:'Talk B',eligible:true}],talksError}):new Promise(resolve=>{bodies.push(options.body);requests.push(resolve)})
  };
  vm.createContext(sandbox);vm.runInContext(script,sandbox);
- return {get,requests,open:()=>sandbox.openTemplateImport()};
+ return {get,requests,bodies,sandbox,open:(...args)=>sandbox.openTemplateImport(...args)};
 }
 
 for(const change of ['template','talk selection'])test(`changing ${change} during expansion allows another review and ignores stale results`,async()=>{
@@ -43,4 +43,13 @@ test('talk API failure disables talk templates while static templates can still 
  select.value='2';select.onchange();assert.equal(review.disabled,false);assert.equal(p.get('clip-import-status').textContent,'');
  const pending=review.onclick();p.requests[0](response({clips:[{name:'Sponsors',segments:[]}]}));await pending;
  assert.equal(p.get('clip-import-apply').disabled,false);
+});
+
+test('replacing a talk reviews the requested ID and waits for explicit apply',async()=>{
+ const p=picker(),clip={type:'streamctl.clip',name:'Talk A',talk:{id:'a',title:'Talk A'},template:{id:0},segments:[]};
+ p.sandbox.segments=[clip];p.sandbox.flatEntries=()=>[{top:0}];let renders=0;p.sandbox.renderSegments=()=>renders++;
+ await p.open(clip,'b');const work=p.get('clip-import-preview').onclick();assert.deepEqual(p.bodies[0].getAll('talk_ids'),['b']);
+ p.requests[0](response({clips:[{type:'streamctl.clip',name:'Talk B',talk:{id:'b',title:'Talk B'},template:{id:0},segments:[]}]}));await work;
+ assert.equal(p.sandbox.segments[0],clip);assert.equal(renders,0);
+ p.get('clip-import-apply').onclick();assert.equal(p.sandbox.segments[0].talk.id,'b');assert.equal(p.sandbox.segments[0].name,'Talk B');assert.equal(renders,1);
 });

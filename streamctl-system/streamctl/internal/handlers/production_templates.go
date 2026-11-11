@@ -54,10 +54,16 @@ type productionTemplateEditPage struct {
 	Error                string
 }
 
+type productionEditorMetadata struct {
+	RegisterRecording bool   `json:"registerRecording"`
+	RecordingTalkID   string `json:"recordingTalkId,omitempty"`
+}
+
 type productionTemplateDefinition struct {
-	Version  int                `json:"version"`
-	Settings json.RawMessage    `json:"settings"`
-	Segments *[]json.RawMessage `json:"segments"`
+	Streamctl *productionEditorMetadata `json:"streamctl,omitempty"`
+	Version   int                       `json:"version"`
+	Settings  json.RawMessage           `json:"settings"`
+	Segments  *[]json.RawMessage        `json:"segments"`
 }
 
 type productionTemplateSettings struct {
@@ -228,6 +234,19 @@ func (h *Handler) productionTemplateSave(w http.ResponseWriter, r *http.Request)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// Website registration belongs to renders, never to reusable templates.
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(definition), &fields); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	delete(fields, "streamctl")
+	encoded, err := json.Marshal(fields)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	definition = string(encoded)
 	if err := h.DB.UpdateProductionTemplate(id, conference, name, definition); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			http.NotFound(w, r)

@@ -1,0 +1,15 @@
+{{define "recordingControlsUI"}}
+<script>
+function createRecordingControls(root,metadata,{conference,batch=false}={}){
+ let dirty=false,targetDirty=false,mode=batch?'batch':'render';
+ const label=document.createElement('label');label.className='check-field';label.style.cssText='display:flex;gap:8px;align-items:center';const enabled=document.createElement('input');enabled.type='checkbox';enabled.checked=!!metadata.registerRecording;label.append(enabled,document.createTextNode('Add completed render to website recordings'));
+ const help=document.createElement('p');help.className='muted';help.textContent='Registers the completed file against a talk. Does not publish it automatically.';
+ const targetWrap=document.createElement('label');targetWrap.className='field';targetWrap.textContent='Recording for';targetWrap.style.cssText='display:grid;gap:6px';const target=document.createElement('select');target.setAttribute('aria-label','Recording for');target.add(new Option('Choose a talk…',''));if(metadata.recordingTalkId)target.add(new Option('Saved talk · '+metadata.recordingTalkId,metadata.recordingTalkId));target.value=metadata.recordingTalkId||'';targetWrap.append(target);
+ const note=document.createElement('p');note.className='muted';root.append(label,help,targetWrap,note);
+ function display(){enabled.checked=!!metadata.registerRecording;targetWrap.hidden=mode==='batch'||!enabled.checked;targetWrap.style.display=targetWrap.hidden?'none':'grid';note.textContent=mode==='batch'&&enabled.checked?'Each separate render will register against its own selected talk.':'';target.value=metadata.recordingTalkId||''}
+ enabled.onchange=()=>{dirty=true;metadata.registerRecording=enabled.checked;display()};target.onchange=()=>{dirty=true;targetDirty=true;metadata.recordingTalkId=target.value};
+ if(!batch)fetch(`/production/renders/template-options?conference=${encodeURIComponent(conference)}`).then(async response=>{if(!response.ok||response.redirected)throw Error();return response.json()}).then(result=>{if(result.talksError)throw Error(result.talksError);const saved=metadata.recordingTalkId||'';target.replaceChildren(new Option('Choose a talk…',''));for(const talk of result.talks)target.add(new Option(talk.title,talk.talk_id));if(saved&&![...target.options].some(o=>o.value===saved))target.add(new Option('Unavailable talk · '+saved,saved));display()}).catch(()=>{note.textContent='Could not load recording targets. Reload before enabling website registration.'});
+ display();return {refresh(nextMode='render',defaultTarget='',defaultEnabled=false){mode=nextMode;if(!dirty)metadata.registerRecording=defaultEnabled;if(!targetDirty&&defaultTarget)metadata.recordingTalkId=defaultTarget;display()}};
+}
+</script>
+{{end}}

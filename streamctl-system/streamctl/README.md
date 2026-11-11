@@ -261,15 +261,27 @@ A few places where extensions would slot in cleanly:
 - **Webhook on stream start/stop**: a `systemd.services.streamctl-stream-N.serviceConfig.ExecStartPre` / `ExecStopPost` hook that POSTs to a URL.
 - **Multiple data tiers**: run multiple stream services in parallel for ABR (1080p + 720p simultaneously). Would need ffmpeg to scale and re-encode, so loses the `-c copy` advantage.
 
-## Livestream selection and worker jobs
+## Render creation and worker jobs
 
-Livestream creation uses flat day/stage groups. Select whole groups or individual
-ready talks; the imported clips are snapshots in schedule order. Eligibility, saved cuts, and title cards are rechecked on creation.
-Talks labelled **Do not record** remain available for individual selection,
-but are excluded from group and select-all actions. Other eligibility and
-missing-input checks still apply. The built-in card-and-cuts recipe transcribes video cuts. Custom Talk cuts
-placeholders expose a transcription checkbox; existing templates retain their
-saved setting, and title cards are never transcribed.
+The Cuts workspace (`/production/cuts`, with `/production/cuts/edit` for the
+cutter) currently contains a Talks section. The old timestamp URLs are removed.
+
+New render creates one project, starting blank with optional talk selection.
+New batch creates one separate project per selected talk, named after its
+title. Both use flat day/stage selection groups and an optional talk template.
+None imports saved cuts only. Restricted talks remain labelled and individually
+selectable, excluded from group and select-all actions. Registration and render
+settings are grouped under collapsed Options in each dialog, using the editor's streaming-ready defaults and controls.
+
+Templates describe clip contents only. Website registration is an explicit render setting with
+a target talk; queueing snapshots the target independently of clip associations.
+Importing or refreshing a clip never changes project encoding or registration.
+Editor metadata is removed from worker manifests and portable exports.
+
+Talk-associated clips display a Talk badge and selector. Choosing another talk
+or refreshing the originating template prepares a replacement for review; only
+confirmation replaces the snapshot, preserving the clip's position. Plain clips
+retain editable names. The imported talk title stays until the next refresh.
 
 Worker shows all queued/running render and editing-media jobs, plus the ten most
 recently completed jobs. **See all jobs** opens history in pages of 25. Job lists

@@ -23,7 +23,7 @@ func TestStagingAndWorkerTemplatesRender(t *testing.T) {
 			data:     productionHomePage{},
 			want:     "Production overview",
 		},
-		{name: "production talk list", template: "production_talks.html", data: productionTalksPage{Conference: "toronto"}, want: "Timestamp talks"},
+		{name: "production talk list", template: "production_talks.html", data: productionTalksPage{Conference: "toronto"}, want: "Cuts"},
 		{
 			name:     "render staging",
 			template: "render.html",

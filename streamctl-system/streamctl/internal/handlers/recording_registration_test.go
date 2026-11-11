@@ -77,7 +77,7 @@ func TestRecordingRegistrationDispatcherRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	manifest := `{"version":1,"jobs":[{"id":"talk","segments":[{"type":"video","src":"toronto/raw.mp4"}]}]}`
+	manifest := `{"streamctl":{"registerRecording":true,"recordingTalkId":"talk-1"},"version":1,"jobs":[{"id":"talk","segments":[{"type":"video","src":"toronto/raw.mp4"}]}]}`
 	id, _, err := database.CreateProductionRender("toronto", "Talk", manifest, &templateID, "talk-1", "full_talk")
 	if err != nil {
 		t.Fatal(err)

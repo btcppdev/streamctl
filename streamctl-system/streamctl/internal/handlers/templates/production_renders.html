@@ -2,87 +2,16 @@
 {{define "content"}}
 {{template "productionNav" .Nav}}
 {{template "productionRecordingPolicyUI"}}
-<div class="production-page-head"><div><h2>Renders</h2><div class="muted">Create and edit resolved conf-render jobs before sending them to a worker.</div></div>{{if .Nav.Conference}}<details class="production-new-menu" id="render-create-menu"><summary class="btn btn-primary production-create-trigger">+ New render</summary><div class="production-new-popover"><form class="production-new-option-form" method="post" action="/production/renders/create">{{csrfField}}<input type="hidden" name="conference" value="{{.Nav.Conference}}"><button type="submit"><strong>Blank</strong><span>Start with an empty render.</span></button></form><button class="production-new-option" type="button" id="render-livestream"><strong>Livestream</strong><span>Choose scheduled talks with title cards and saved cuts.</span></button><button class="production-new-option" type="button" id="render-from-template" {{if not .Templates}}disabled{{end}}><strong>From template</strong><span>{{if .Templates}}Generate resolved jobs from a template.{{else}}No templates available.{{end}}</span></button><form class="production-template-picker" id="render-template-picker" method="post" action="/production/renders/generate" hidden>{{csrfField}}<input type="hidden" name="conference" value="{{.Nav.Conference}}"><select name="template_id" aria-label="Template" required><option value="">Choose a template…</option>{{range .Templates}}<option value="{{.ID}}">{{.Name}}</option>{{end}}</select><button class="btn" type="submit">Generate</button></form></div></details>{{end}}</div>
+<div class="production-page-head"><div><h2>Renders</h2><div class="muted">Create and edit renders before sending them to a worker.</div></div>{{if .Nav.Conference}}<div class="render-create-actions" role="group" aria-label="Create renders"><button class="btn btn-primary production-create-trigger" type="button" id="new-render-trigger">+ New render</button><button class="btn btn-primary production-create-trigger" type="button" id="batch-render-trigger">+ New batch</button></div>{{end}}</div>
 {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
-{{if or .Generated .Skipped}}<div class="production-notice">Created {{.Generated}} render{{if ne .Generated 1}}s{{end}}.{{if .Skipped}} Skipped {{.Skipped}} talk{{if ne .Skipped 1}}s{{end}} without cuts or with an existing render from this template.{{end}}</div>{{end}}
+{{if .Generated}}<div class="production-notice">Created {{.Generated}} render{{if ne .Generated 1}}s{{end}}.</div>{{end}}
 {{if .Queued}}<div class="production-notice">Queued {{.Queued}} render{{if ne .Queued 1}}s{{end}}. Follow execution details on the Worker page.</div>{{end}}{{if .Deleted}}<div class="production-notice">Deleted {{.Deleted}} render{{if ne .Deleted 1}}s{{end}}.</div>{{end}}
-{{if .Nav.Conference}}{{if .Renders}}<form class="bulk-form" id="render-bulk" method="post">{{csrfField}}<input type="hidden" name="conference" value="{{.Nav.Conference}}"></form><div class="production-list-toolbar" data-render-selection data-selection-target="[data-render-items]"><label title="Select all"><input type="checkbox" data-select-all aria-label="Select all"></label><span class="muted selection-idle">{{len .Renders}} render{{if ne (len .Renders) 1}}s{{end}}</span><span class="muted selection-count"><span data-selected-count>0</span> selected</span><span class="selection-spacer"></span><div class="selection-actions"><button class="btn btn-danger" type="submit" form="render-bulk" formaction="/production/renders/delete-selected" data-selection-action="delete">Delete</button><button class="btn btn-primary" type="submit" form="render-bulk" formaction="/production/renders/queue" data-selection-action="queue">Queue</button></div></div><div class="production-list" data-render-items>{{range .Renders}}<div class="production-list-item"><input class="production-list-check" type="checkbox" name="ids" value="{{.ID}}" form="render-bulk" data-select-item data-delete="true" data-queue="{{.CanQueue}}" data-finished="{{.HasFinished}}" aria-label="Select {{.Name}}"><a class="production-list-row" href="{{.URL}}"><div><strong>{{.Name}}</strong>{{template "productionRecordingTags" .RecordingNotices}}<span class="production-list-meta">{{if .TalkID}}Generated from a talk · {{end}}Updated {{.UpdatedLabel}}</span>{{if .RecordingStatus}}<span class="production-list-meta" title="{{.RecordingError}}">{{.RecordingStatus}}</span>{{end}}</div><div class="production-list-side"><span class="badge {{.BadgeClass}}">{{.StatusLabel}}</span><span class="production-list-count">{{.SegmentCount}} segment{{if ne .SegmentCount 1}}s{{end}} →</span></div></a></div>{{end}}</div><script>const renderSelection=wireProductionSelection(document.querySelector('[data-render-selection]')),renderBulk=document.getElementById('render-bulk');renderBulk.addEventListener('submit',event=>{const count=renderSelection.selected().length;if(event.submitter?.dataset.selectionAction==='delete'){if(!confirm(`Delete ${count} selected render(s)? Existing worker jobs and history will remain.`))event.preventDefault();return}if(event.submitter?.dataset.selectionAction==='queue'){const previous=renderSelection.selected().filter(item=>item.dataset.finished==='true').length,message=previous?`Queue ${count} render(s)? ${previous} have completed before and will create newer outputs.`:`Queue ${count} render(s)?`;if(!confirm(message))event.preventDefault()}})</script>{{else}}{{if not .Error}}<div class="preview-empty"><h3>No renders yet</h3><p>Create a blank render or generate renders from a template.</p></div>{{end}}{{end}}{{else}}<div class="preview-empty"><h3>Choose a conference</h3><p>Its renders will appear here.</p></div>{{end}}
-{{if .Nav.Conference}}<script>const renderCreateMenu=document.getElementById('render-create-menu'),renderTemplatePicker=document.getElementById('render-template-picker');document.getElementById('render-from-template').onclick=()=>{renderTemplatePicker.hidden=false;renderTemplatePicker.querySelector('select').focus()};renderCreateMenu.addEventListener('toggle',()=>{if(!renderCreateMenu.open)renderTemplatePicker.hidden=true});document.addEventListener('click',event=>{if(!renderCreateMenu.contains(event.target))renderCreateMenu.open=false})</script>{{end}}
+{{if .Nav.Conference}}{{if .Renders}}<form class="bulk-form" id="render-bulk" method="post">{{csrfField}}<input type="hidden" name="conference" value="{{.Nav.Conference}}"></form><div class="production-list-toolbar" data-render-selection data-selection-target="[data-render-items]"><label title="Select all"><input type="checkbox" data-select-all aria-label="Select all"></label><span class="muted selection-idle">{{len .Renders}} render{{if ne (len .Renders) 1}}s{{end}}</span><span class="muted selection-count"><span data-selected-count>0</span> selected</span><span class="selection-spacer"></span><div class="selection-actions"><button class="btn btn-danger" type="submit" form="render-bulk" formaction="/production/renders/delete-selected" data-selection-action="delete">Delete</button><button class="btn btn-primary" type="submit" form="render-bulk" formaction="/production/renders/queue" data-selection-action="queue">Queue</button></div></div><div class="production-list" data-render-items>{{range .Renders}}<div class="production-list-item"><input class="production-list-check" type="checkbox" name="ids" value="{{.ID}}" form="render-bulk" data-select-item data-delete="true" data-queue="{{.CanQueue}}" data-finished="{{.HasFinished}}" aria-label="Select {{.Name}}"><a class="production-list-row" href="{{.URL}}"><div><strong>{{.Name}}</strong>{{template "productionRecordingTags" .RecordingNotices}}<span class="production-list-meta">{{if .TalkID}}Generated from a talk · {{end}}Updated {{.UpdatedLabel}}</span>{{if .RecordingStatus}}<span class="production-list-meta" title="{{.RecordingError}}">{{.RecordingStatus}}</span>{{end}}</div><div class="production-list-side"><span class="badge {{.BadgeClass}}">{{.StatusLabel}}</span><span class="production-list-count">{{.SegmentCount}} segment{{if ne .SegmentCount 1}}s{{end}} →</span></div></a></div>{{end}}</div><script>const renderSelection=wireProductionSelection(document.querySelector('[data-render-selection]')),renderBulk=document.getElementById('render-bulk');renderBulk.addEventListener('submit',event=>{const count=renderSelection.selected().length;if(event.submitter?.dataset.selectionAction==='delete'){if(!confirm(`Delete ${count} selected render(s)? Existing worker jobs and history will remain.`))event.preventDefault();return}if(event.submitter?.dataset.selectionAction==='queue'){const previous=renderSelection.selected().filter(item=>item.dataset.finished==='true').length,message=previous?`Queue ${count} render(s)? ${previous} have completed before and will create newer outputs.`:`Queue ${count} render(s)?`;if(!confirm(message))event.preventDefault()}})</script>{{else}}{{if not .Error}}<div class="preview-empty"><h3>No renders yet</h3><p>Start a new render or create separate talk renders in a batch.</p></div>{{end}}{{end}}{{else}}<div class="preview-empty"><h3>Choose a conference</h3><p>Its renders will appear here.</p></div>{{end}}
 {{if .Nav.Conference}}
-<dialog id="livestream-dialog" aria-labelledby="livestream-title" style="width:min(720px,calc(100vw - 24px));background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:8px">
-<form id="livestream-form" method="post" action="/production/renders/create-livestream">
-{{csrfField}}<input type="hidden" name="conference" value="{{.Nav.Conference}}">
-<div style="display:flex;align-items:center;gap:12px"><h3 id="livestream-title" style="flex:1">New livestream render</h3><button class="btn" type="button" id="livestream-close">Close</button></div>
-<p class="muted">Choose talks in schedule order. The selected template supplies each clip’s contents. You can edit the draft before queueing it.</p>
-<label class="field">Talk template<select name="template_id" aria-label="Talk template" style="width:100%"><option value="0">Card + saved cuts</option>{{range .TalkTemplates}}<option value="{{.ID}}">{{.Name}}</option>{{end}}</select></label>
-<input type="hidden" name="selection" value="explicit"><div class="clip-tools"><button class="btn" type="button" id="livestream-select-all">Select ready talks</button><button class="btn" type="button" id="livestream-select-none">Clear</button></div><div id="livestream-talks" style="max-height:40vh;overflow:auto;display:grid;gap:10px;margin-top:12px"></div>
-<p id="livestream-status" role="status" aria-live="polite"></p><ul id="livestream-omissions"></ul>
-<button class="btn btn-primary" id="livestream-create" type="submit" disabled>Create render</button>
-</form></dialog>
+{{range .CreationDialogs}}{{template "renderCreationDialog" .}}{{end}}
+{{template "renderSettingsUI"}}{{template "recordingControlsUI"}}{{template "renderCreationUI"}}
 <script>
-function livestreamTalkGroups(talks){
- const groups=new Map();
- for(const talk of talks){
-  const date=talk.starts_at?.slice(0,10);if(!date||!talk.stageLabel)continue;
-  const key=date+'\u0000'+talk.stageLabel;
-  if(!groups.has(key))groups.set(key,{date,label:(talk.dayLabel||date)+' · '+talk.stageLabel,talks:[]});
-  groups.get(key).talks.push(talk);
- }
- return [...groups.values()].sort((a,b)=>a.date.localeCompare(b.date));
-}
-
-{
-const dialog=document.getElementById('livestream-dialog'),form=document.getElementById('livestream-form'),status=document.getElementById('livestream-status'),omissions=document.getElementById('livestream-omissions'),create=document.getElementById('livestream-create'),close=document.getElementById('livestream-close'),talkList=document.getElementById('livestream-talks'),template=form.elements.template_id;
-const selectAll=document.getElementById('livestream-select-all'),clear=document.getElementById('livestream-select-none');
-let talks=[],groups=[],busy=false,created=false,epoch=0,loading=false;
-const talkChecks=()=>[...talkList.querySelectorAll('input[name="talk_ids"]')];
-function showOmissions(items=[]){omissions.replaceChildren();for(const item of items){const li=document.createElement('li');li.textContent=`${item.title}: ${item.reason}`;omissions.append(li)}}
-function selectionCount(){
- const count=talkChecks().filter(c=>c.checked).length;
- for(const {control,checks} of groups){const ready=checks.filter(c=>!c.disabled&&!c.manualOnly),selected=ready.filter(c=>c.checked).length;control.disabled=!ready.length;control.checked=ready.length>0&&selected===ready.length;control.indeterminate=selected>0&&selected<ready.length;}
- create.disabled=created||busy||loading||!count;create.textContent=count?`Create render · ${count} talk${count===1?'':'s'}`:'Create render';
- status.textContent=count?`${count} selected. Clips will be imported in schedule order.`:'Select day/stage groups or individual talks.';
-}
-function groupControl(label,checks){
- const row=document.createElement('label');row.className='check-field';row.style.cssText='width:auto;white-space:normal;font-weight:600';
- const control=document.createElement('input');control.type='checkbox';control.setAttribute('aria-label','Select '+label);
- control.onchange=()=>{for(const check of checks)if(!check.disabled&&!check.manualOnly)check.checked=control.checked;selectionCount()};
- row.append(control,document.createTextNode(label));groups.push({control,checks});return row;
-}
-function showTalks(selected=new Set()){
- talkList.replaceChildren();groups=[];
- for(const group of livestreamTalkGroups(talks)){
-  const section=document.createElement('section'),checks=[],heading=document.createElement('h4');heading.style.margin='12px 0';section.style.cssText='display:grid;gap:10px;padding-bottom:14px';section.append(heading);
-  for(const talk of group.talks){
-   const row=document.createElement('label');row.className='check-field';row.style.cssText='width:auto;white-space:normal;align-items:flex-start;margin-left:18px';
-   const check=document.createElement('input');check.type='checkbox';check.name='talk_ids';check.value=talk.talk_id;check.disabled=!talk.ready;check.manualOnly=!!talk.manualOnly;check.checked=talk.ready&&selected.has(talk.talk_id);check.onchange=selectionCount;checks.push(check);
-   const text=document.createElement('span'),title=document.createElement('strong'),detail=document.createElement('span');title.textContent=talk.title;detail.className='muted';detail.style.display='block';
-   detail.textContent=[talk.timeLabel,talk.ready?(talk.manualOnly?'Individual selection only':'Ready'):talk.reason,['limited','prohibited'].includes(talk.recordingNotice?.level)?talk.recordingNotice.label:''].filter(Boolean).join(' · ');
-   text.append(title,detail);row.append(check,text);section.append(row);
-  }
-  heading.append(groupControl(group.label,checks));talkList.append(section);
- }
- selectionCount();if(!talks.length)status.textContent='No scheduled talks are available.';
-}
-async function readResponse(response){if(!(response.headers.get('content-type')||'').includes('application/json'))throw Error(response.status===401||response.redirected?'Your session may have expired. Reload this page and sign in again.':'Could not load livestream data. Please try again.');return response.json()}
-async function loadTalks(){
- const selected=new Set(talkChecks().filter(c=>c.checked).map(c=>c.value)),token=++epoch;loading=true;status.textContent='Loading talks…';create.disabled=true;selectAll.disabled=true;clear.disabled=true;talkList.replaceChildren();
- try{const response=await fetch(`/production/renders/livestream-options?conference=${encodeURIComponent(form.elements.conference.value)}&template_id=${encodeURIComponent(template.value)}`),result=await readResponse(response);if(token!==epoch||!dialog.open)return;if(!response.ok)throw Error(result.error);talks=result.talks;loading=false;showTalks(selected);selectAll.disabled=false;clear.disabled=false;}
- catch(error){if(token===epoch)status.textContent=error.message}
- finally{if(token===epoch){loading=false;create.disabled=create.disabled||!talkChecks().some(c=>c.checked)}}
-}
-document.getElementById('render-livestream').onclick=()=>{renderCreateMenu.open=false;dialog.showModal();created=false;showOmissions();return loadTalks()};
-selectAll.onclick=()=>{for(const c of talkChecks())if(!c.disabled&&!c.manualOnly)c.checked=true;selectionCount()};clear.onclick=()=>{for(const c of talkChecks())c.checked=false;selectionCount()};
-close.onclick=()=>dialog.close();dialog.addEventListener('close',()=>{epoch++;renderCreateMenu.querySelector('summary').focus()});dialog.addEventListener('cancel',event=>{if(busy)event.preventDefault()});template.onchange=loadTalks;
-form.onsubmit=async event=>{
- event.preventDefault();if(busy||loading||create.disabled)return;const data=new URLSearchParams(new FormData(form));busy=true;create.disabled=true;
- for(const node of form.querySelectorAll('select,input,button'))node.disabled=true;
- status.textContent='Creating render…';showOmissions();
- try{const response=await fetch(form.action,{method:'POST',body:data}),result=await readResponse(response);showOmissions(result.omitted);if(!response.ok)throw Error(result.error);created=true;sessionStorage.setItem('livestream-omissions:'+result.url,JSON.stringify(result.omitted));window.location.assign(result.url)}
- catch(error){status.textContent=error.message}
- finally{busy=false;for(const node of form.querySelectorAll('select,input,button'))node.disabled=false;for(const c of talkChecks())c.disabled=!talks.find(t=>t.talk_id===c.value)?.ready;for(const {control,checks} of groups)control.disabled=!checks.some(c=>!c.disabled&&!c.manualOnly);create.disabled=created||!talkChecks().some(c=>c.checked)}
-};
-}
+for(const dialog of document.querySelectorAll('[data-render-create]'))createRenderCreationDialog(dialog,document.getElementById(dialog.dataset.renderCreate+'-trigger'),{batch:dialog.dataset.batch==='true'});
 </script>
 {{end}}
 {{end}}

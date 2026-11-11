@@ -1246,8 +1246,9 @@ func (db *DB) EnqueueProductionRender(id int64, name, manifestJSON string) (*Ren
 	// Snapshot the explicit recording target atomically with submission. Generic
 	// renders (including copies) never acquire a website recording implicitly.
 	if _, err := tx.Exec(`INSERT INTO recording_registrations (queue_id, conference, talk_id)
-		SELECT ?, conference, talk_id FROM production_renders
-		WHERE id = ? AND recording_kind = 'full_talk' AND talk_id <> ''`, queueID, id); err != nil {
+		SELECT ?, conference, json_extract(manifest_json, '$.streamctl.recordingTalkId') FROM production_renders
+ WHERE id = ? AND json_extract(manifest_json, '$.streamctl.registerRecording') = 1
+ AND COALESCE(json_extract(manifest_json, '$.streamctl.recordingTalkId'), '') <> ''`, queueID, id); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
