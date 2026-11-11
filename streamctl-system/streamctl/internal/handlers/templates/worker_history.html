@@ -1,0 +1,7 @@
+{{define "worker_history.html"}}{{template "layout" .}}{{end}}
+{{define "content"}}
+<div style="display:flex;align-items:center;gap:12px"><div><h2>Job history</h2><p class="muted">Renders and editing media. Older jobs stay available here.</p></div><a class="btn" style="margin-left:auto" href="/worker">Back to worker</a><button class="btn" id="refresh-jobs" type="button">Refresh</button></div>
+<p class="muted" id="job-update-status" role="status">Updates automatically</p>
+<div id="worker-jobs">{{template "worker_jobs.html" .}}</div>
+{{template "workerJobUpdates"}}
+{{end}}

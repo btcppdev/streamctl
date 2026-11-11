@@ -48,6 +48,7 @@ type productionHomePage struct {
 
 type productionTalkView struct {
 	btcppclient.Candidate
+	ManualOnly      bool                      `json:"manualOnly,omitempty"`
 	RecordingNotice productionRecordingNotice `json:"recordingNotice"`
 	Cuts            []db.ProductionCut        `json:"cuts"`
 	CutCount        int                       `json:"-"`
@@ -352,6 +353,7 @@ func (h *Handler) productionTalks(ctx context.Context, conference string) ([]pro
 	talks := make([]productionTalkView, len(candidates))
 	for i, candidate := range candidates {
 		talks[i].Candidate = candidate
+		talks[i].ManualOnly = candidate.RecordingPolicy == "prohibited" && talkAllowsIndividualSelection(talks[i])
 		talks[i].RecordingNotice = talkRecordingNotice(talks[i])
 	}
 	return talks, nil

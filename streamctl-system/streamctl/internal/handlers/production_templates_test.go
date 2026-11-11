@@ -49,7 +49,7 @@ func TestValidateProductionTemplateRejectsInvalidDefinitions(t *testing.T) {
 		{"video overlay", `{"version":1,"settings":{},"segments":[{"type":"video","src":"toronto/recordings/intro.mp4","overlay":"toronto/recordings/bug.mp4"}]}`},
 		{"video used as audio", `{"version":1,"settings":{},"segments":[{"type":"video","src":"toronto/recordings/intro.mp4","audio":{"src":"toronto/recordings/music.mp4"}}]}`},
 		{"dynamic source", `{"version":1,"settings":{},"segments":[{"type":"streamctl.talkCuts","src":"toronto/recordings/raw.mp4"}]}`},
-		{"dynamic transcription", `{"version":1,"settings":{},"segments":[{"type":"streamctl.talkCuts","transcribe":true}]}`},
+		{"invalid dynamic transcription", `{"version":1,"settings":{},"segments":[{"type":"streamctl.talkCuts","transcribe":"yes"}]}`},
 		{"talk card source", `{"version":1,"settings":{},"segments":[{"type":"streamctl.talkCard","src":"toronto/card.png"}]}`},
 		{"talk card duration", `{"version":1,"settings":{},"segments":[{"type":"streamctl.talkCard","durationMs":0}]}`},
 		{"bad window", `{"version":1,"settings":{},"segments":[{"type":"video","src":"toronto/recordings/raw.mp4","in":"00:00:05.000","out":"00:00:04.000"}]}`},

@@ -158,6 +158,9 @@ func (h *Handler) Register(mux *http.ServeMux) {
 		})))
 	}
 	mux.Handle("/worker", h.auth(http.HandlerFunc(h.worker)))
+	mux.Handle("/worker/jobs", h.auth(http.HandlerFunc(h.workerJobs)))
+	mux.Handle("/worker/jobs/status", h.auth(http.HandlerFunc(h.workerJobsStatus)))
+	mux.Handle("/worker/state", h.auth(http.HandlerFunc(h.workerState)))
 	mux.Handle("/worker/media/requeue", h.mutation(http.HandlerFunc(h.productionProxyRequeue)))
 	mux.Handle("/gpu-worker/create", h.mutation(http.HandlerFunc(h.gpuWorkerCreate)))
 	mux.Handle("/gpu-worker/destroy", h.mutation(http.HandlerFunc(h.gpuWorkerDestroy)))
@@ -958,35 +961,46 @@ type gpuAvailabilityView struct {
 }
 
 func (h *Handler) gpuJobLogs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
 	unit := strings.TrimPrefix(r.URL.Path, "/gpu-worker/logs/")
 	if !validGPUUnitName(unit) {
 		http.NotFound(w, r)
 		return
 	}
-	host, err := h.gpuWorkerSSHHost(r.Context())
-	if err != nil {
-		if cached, dbErr := h.DB.GetGPUJobLog(unit); dbErr == nil {
-			h.render(w, r, "gpu_job_logs.html", map[string]any{
-				"Job":  gpuJobViewFromDB(*cached),
-				"Host": cached.Host,
-			})
-			return
-		}
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	job := h.gpuJob(ctx, host, unit, true)
-	if strings.TrimSpace(job.Journal) == "" {
-		if cached, err := h.DB.GetGPUJobLog(unit); err == nil {
-			job = gpuJobViewFromDB(*cached)
+	host, err := h.gpuWorkerSSHHost(ctx)
+	job := gpuJobView{UnitName: unit}
+	cached := false
+	warning := ""
+	if err == nil {
+		job = h.gpuJob(ctx, host, unit, true)
+	} else {
+		warning = "Worker unavailable. Showing saved logs."
+	}
+	if err != nil || strings.TrimSpace(job.Journal) == "" {
+		if saved, dbErr := h.DB.GetGPUJobLog(unit); dbErr == nil {
+			job = gpuJobViewFromDB(*saved)
+			host = saved.Host
+			cached = true
 		}
 	}
-	h.render(w, r, "gpu_job_logs.html", map[string]any{
-		"Job":  job,
-		"Host": host,
-	})
+	if err != nil && !cached {
+		http.Error(w, "Worker unavailable and no saved logs were found.", http.StatusServiceUnavailable)
+		return
+	}
+	if cached && warning == "" {
+		warning = "Showing saved logs; no live log output was available."
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	if r.URL.Query().Get("format") == "json" {
+		livestreamResponse(w, 200, map[string]any{"job": job, "host": host, "cached": cached, "warning": warning})
+		return
+	}
+	h.render(w, r, "gpu_job_logs.html", map[string]any{"Job": job, "Host": host, "Cached": cached, "Warning": warning})
 }
 
 // Both VM and container workers use this execution and status contract.
@@ -2787,7 +2801,7 @@ func (h *Handler) renderStatus(w http.ResponseWriter, r *http.Request, status in
 		}
 		return ""
 	}
-	tmpl, err := template.New("").Funcs(funcs).ParseFS(tmpls, "layout.html", "production_media_browser.html", "production_media_preview.html", "production_project_preview.html", "production_clip_editor.html", "production_recording_policy.html", "broadcast_picker.html", name)
+	tmpl, err := template.New("").Funcs(funcs).ParseFS(tmpls, "layout.html", "production_media_browser.html", "production_media_preview.html", "production_project_preview.html", "production_clip_editor.html", "production_recording_policy.html", "broadcast_picker.html", "worker_jobs.html", "worker_panel.html", "live_updates.html", name)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
