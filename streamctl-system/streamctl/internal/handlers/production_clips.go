@@ -11,7 +11,7 @@ import (
 	"streamctl/internal/renderdraft"
 )
 
-var defaultTalkRecipe = []json.RawMessage{json.RawMessage(`{"type":"streamctl.talkCard"}`), json.RawMessage(`{"type":"streamctl.talkCuts"}`)}
+var defaultTalkRecipe = []json.RawMessage{json.RawMessage(`{"type":"streamctl.talkCard"}`), json.RawMessage(`{"type":"streamctl.talkCuts","transcribe":true}`)}
 
 func recipeNeedsTalk(recipe []json.RawMessage) bool {
 	for _, raw := range recipe {
@@ -131,7 +131,7 @@ func (h *Handler) productionExpandTemplate(w http.ResponseWriter, r *http.Reques
 		selected := []productionTalkView{}
 		for _, talk := range talks {
 			if wanted[talk.TalkID] {
-				if !talk.Eligible {
+				if !talkAllowsIndividualSelection(talk) {
 					fail(fmt.Errorf("%s is not eligible for video rendering", talk.Title))
 					return
 				}

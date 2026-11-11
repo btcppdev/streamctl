@@ -34,10 +34,10 @@ func TestStagingAndWorkerTemplatesRender(t *testing.T) {
 			name:     "worker execution",
 			template: "worker.html",
 			data: map[string]any{
+				"Jobs":            workerJobsView{},
 				"GPUWorker":       gpuWorkerView{},
 				"GPUStatus":       gpuStatusView{},
 				"GPUAvailability": gpuAvailabilityView{},
-				"RenderQueue":     renderJobsView{},
 			},
 			want: "GPU lifecycle and execution queues",
 		},

@@ -385,6 +385,10 @@ func (h *Handler) productionRenderGenerate(w http.ResponseWriter, r *http.Reques
 		}
 	}
 	for _, talk := range talks {
+		if talk.RecordingPolicy == "prohibited" {
+			skipped++
+			continue
+		}
 		talkCuts := cuts[talk.TalkID]
 		if recordingKind == "full_talk" && len(talkCuts) == 0 {
 			skipped++
@@ -518,6 +522,9 @@ func expandProductionTemplate(source []json.RawMessage, conference, talkID, soci
 				segment := map[string]any{"type": cut.SourceType, "src": cut.Source, "in": formatProductionTimecode(cut.InMS), "out": formatProductionTimecode(cut.OutMS)}
 				if dynamic.Overlay != nil {
 					segment["overlay"] = *dynamic.Overlay
+				}
+				if dynamic.Transcribe != nil {
+					segment["transcribe"] = *dynamic.Transcribe
 				}
 				if title != "" {
 					segment["streamctl"] = productionSegmentMetadata{TalkTitle: title, TalkSchedule: schedule}

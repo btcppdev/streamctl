@@ -1,0 +1,32 @@
+{{define "liveUpdates"}}
+<script>
+function createLiveUpdates({url,apply,status,button,interval=5000}){
+ let stopped=false,busy=false,timer=null,delay=interval;
+ async function update(){
+  if(stopped||busy||document.hidden)return;
+  busy=true;clearTimeout(timer);
+  const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),20000);
+  try{const response=await fetch(url,{signal:controller.signal,cache:'no-store',headers:{Accept:'text/html, application/json'}});if(!response.ok||response.redirected)throw Error('Updates unavailable');const content=await response.text();if(stopped||document.hidden)return;const applied=apply(content);delay=interval;if(status)status.textContent=applied===false?'Updates held while a job control has focus.':'Updated '+new Date().toLocaleTimeString();}
+  catch(error){if(!stopped){delay=Math.min(30000,delay*2);if(status)status.textContent='Updates paused — retrying. Last displayed data may be stale.'}}
+  finally{clearTimeout(timeout);busy=false;if(!stopped&&!document.hidden)timer=setTimeout(update,delay)}
+ }
+ const visible=()=>{clearTimeout(timer);if(!document.hidden)update()};document.addEventListener('visibilitychange',visible);
+ if(button)button.onclick=update;timer=setTimeout(update,interval);
+ const stop=()=>{stopped=true;clearTimeout(timer);document.removeEventListener('visibilitychange',visible)};window.addEventListener('pagehide',stop,{once:true});return {update,stop};
+}
+function updateJobList(root,html){
+ // Keep keyboard focus on a job action and leave expanded errors open.
+ if(root.contains(document.activeElement))return false;
+ const open=new Set([...root.querySelectorAll('details[open]')].map(n=>n.dataset.jobError));
+ const selections=new Map([...root.querySelectorAll('select[name]')].map(n=>[n.name,n.value]));
+ root.innerHTML=html;for(const node of root.querySelectorAll('details'))if(open.has(node.dataset.jobError))node.open=true;
+ for(const node of root.querySelectorAll('select[name]'))if([...node.options].some(o=>o.value===selections.get(node.name)))node.value=selections.get(node.name);
+}
+</script>
+{{end}}
+{{define "workerJobUpdates"}}
+{{template "liveUpdates"}}
+<script>
+{const root=document.getElementById('worker-jobs'),status=document.getElementById('job-update-status');createLiveUpdates({url:'/worker/jobs/status'+(location.pathname==='/worker/jobs'?'?all=1&page='+(new URLSearchParams(location.search).get('page')||'1'):''),apply:html=>updateJobList(root,html),status,button:document.getElementById('refresh-jobs')});}
+</script>
+{{end}}

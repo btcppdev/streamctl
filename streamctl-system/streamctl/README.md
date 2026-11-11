@@ -260,3 +260,22 @@ A few places where extensions would slot in cleanly:
 - **Per-event egress tracking**: parse ffmpeg's stderr (currently `>StandardError=journal`) to record bytes sent. Useful if you're worried about VPS bandwidth caps.
 - **Webhook on stream start/stop**: a `systemd.services.streamctl-stream-N.serviceConfig.ExecStartPre` / `ExecStopPost` hook that POSTs to a URL.
 - **Multiple data tiers**: run multiple stream services in parallel for ABR (1080p + 720p simultaneously). Would need ffmpeg to scale and re-encode, so loses the `-c copy` advantage.
+
+## Livestream selection and worker jobs
+
+Livestream creation uses flat day/stage groups. Select whole groups or individual
+ready talks; the imported clips are snapshots in schedule order. Eligibility, saved cuts, and title cards are rechecked on creation.
+Talks labelled **Do not record** remain available for individual selection,
+but are excluded from group and select-all actions. Other eligibility and
+missing-input checks still apply. The built-in card-and-cuts recipe transcribes video cuts. Custom Talk cuts
+placeholders expose a transcription checkbox; existing templates retain their
+saved setting, and title cards are never transcribed.
+
+Worker shows all queued/running render and editing-media jobs, plus the ten most
+recently completed jobs. **See all jobs** opens history in pages of 25. Job lists
+and logs update every five seconds; worker state updates every fifteen seconds.
+Updates pause in hidden tabs and back off on failures without reloading the page.
+Media preparation shows its reported stage and percentage; renders link to logs
+without inventing a percentage. Saved logs remain available after a worker is
+removed and are identified as saved output. Disable **Follow latest output** to
+read earlier output without losing your scroll position.

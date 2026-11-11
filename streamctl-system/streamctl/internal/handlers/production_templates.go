@@ -110,8 +110,9 @@ type productionTemplateVideoSegment struct {
 }
 
 type productionTemplateTalkCutsSegment struct {
-	Type    string  `json:"type"`
-	Overlay *string `json:"overlay"`
+	Type       string  `json:"type"`
+	Overlay    *string `json:"overlay"`
+	Transcribe *bool   `json:"transcribe,omitempty"`
 }
 
 type productionTemplateTalkCardSegment struct {

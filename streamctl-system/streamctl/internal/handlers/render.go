@@ -43,29 +43,6 @@ type renderSegmentStub struct {
 	} `json:"audio"`
 }
 
-type renderQueueItemView struct {
-	ID           int64
-	Name         string
-	UnitName     string
-	Status       string
-	AttemptCount int
-	LastError    string
-	CreatedAt    string
-	StartedAt    string
-	FinishedAt   string
-	OutputPrefix string
-}
-
-type renderJobsView struct {
-	Items     []renderQueueItemView
-	Queued    int
-	Running   int
-	Failed    int
-	Finished  int
-	Cancelled int
-	Error     string
-}
-
 func validateRenderManifest(raw []byte) error {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return errors.New("manifest is required")
@@ -147,33 +124,6 @@ func validateRenderObjectKey(source string) (string, error) {
 
 func (h *Handler) renderJobs(w http.ResponseWriter, r *http.Request) {
 	h.render(w, r, "render.html", map[string]any{"Error": r.URL.Query().Get("err")})
-}
-
-func (h *Handler) renderQueueView() renderJobsView {
-	items, err := h.DB.ListVisibleRenderQueueItems(50)
-	view := renderJobsView{}
-	if err != nil {
-		view.Error = err.Error()
-	} else {
-		for _, item := range items {
-			view.Items = append(view.Items, renderQueueItemView{
-				ID: item.ID, Name: item.Name, UnitName: item.UnitName, Status: item.Status,
-				AttemptCount: item.AttemptCount, LastError: item.LastError,
-				CreatedAt: item.CreatedAt.Format("2006-01-02 15:04"),
-				StartedAt: formatOptionalTime(item.StartedAt), FinishedAt: formatOptionalTime(item.FinishedAt),
-				OutputPrefix: renderOutputPrefix(item.ID, item.ManifestJSON),
-			})
-		}
-	}
-	if counts, countErr := h.DB.RenderQueueStatusCounts(); countErr != nil {
-		if view.Error == "" {
-			view.Error = countErr.Error()
-		}
-	} else {
-		view.Queued, view.Running, view.Failed = counts["queued"], counts["running"], counts["failed"]
-		view.Finished, view.Cancelled = counts["finished"], counts["cancelled"]
-	}
-	return view
 }
 
 func renderOutputPrefix(id int64, raw string) string {

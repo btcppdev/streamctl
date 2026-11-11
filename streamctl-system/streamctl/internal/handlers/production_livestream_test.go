@@ -17,7 +17,7 @@ import (
 )
 
 func livestreamCandidate(id, start, stage string) productionTalkView {
-	return productionTalkView{Candidate: btcppclient.Candidate{TalkID: id, Title: id, StartsAt: stringPointer(start), Venue: stage, SocialCard: "toronto/talks/" + id + ".png"}}
+	return productionTalkView{Candidate: btcppclient.Candidate{TalkID: id, Title: id, Eligible: true, StartsAt: stringPointer(start), Venue: stage, SocialCard: "toronto/talks/" + id + ".png"}}
 }
 
 func TestAssembleLivestreamScheduleAndOmissions(t *testing.T) {
@@ -47,7 +47,7 @@ func TestAssembleLivestreamScheduleAndOmissions(t *testing.T) {
 			t.Fatalf("segment %d=%s wanted %s", i, segments[i], want)
 		}
 	}
-	if !strings.Contains(string(segments[2]), "00:00:03.000") || omitted[0].Reason != "No saved cuts" || omitted[1].Reason != "Missing or invalid saved title card" {
+	if !strings.Contains(string(segments[2]), "00:00:03.000") || omitted[0].Reason != "No saved cuts" || !strings.Contains(omitted[1].Reason, "invalid saved social card") {
 		t.Fatalf("segments=%s omitted=%+v", segments, omitted)
 	}
 	if _, _, _, err := assembleLivestream(talks, cuts, "toronto", "2026-07-23", "Talks"); err == nil {
@@ -166,7 +166,7 @@ func TestLivestreamOptionsAndDialog(t *testing.T) {
 	}
 	w = httptest.NewRecorder()
 	h.productionRenders(w, httptest.NewRequest(http.MethodGet, "/production/renders?conference=toronto", nil))
-	for _, want := range []string{">Livestream<", "livestream-dialog", "name=\"day\"", "name=\"stage\"", "create-livestream", "showModal()", "day.onchange"} {
+	for _, want := range []string{">Livestream<", "livestream-dialog", "livestream-talks", "Select ready talks", "create-livestream", "showModal()", "livestreamTalkGroups"} {
 		if w.Code != 200 || !strings.Contains(w.Body.String(), want) {
 			t.Fatalf("missing %s status=%d body=%s", want, w.Code, w.Body.String())
 		}
@@ -202,5 +202,134 @@ func TestLivestreamMutationRequiresCSRFAndPOST(t *testing.T) {
 		if w.Code != tc.status {
 			t.Fatalf("%s status=%d body=%s", tc.method, w.Code, w.Body.String())
 		}
+	}
+}
+
+func TestLivestreamRejectsUnavailableAndStaleExplicitSelections(t *testing.T) {
+	database := productionHandlerTestDB(t)
+	ready := livestreamCandidate("ready", "2026-07-22T10:00:00-04:00", "one")
+	banned := livestreamCandidate("banned", "2026-07-22T11:00:00-04:00", "one")
+	banned.Eligible = false
+	banned.RecordingPolicy = "prohibited"
+	banned.Reasons = []string{"another_eligibility_failure"}
+	cut := db.ProductionCut{SourceType: "video", Source: "toronto/recordings/talk.mp4", InMS: 0, OutMS: 10000}
+	cuts := map[string][]db.ProductionCut{"ready": {cut}, "banned": {cut}}
+	_, clips, omitted, err := assembleLivestream([]productionTalkView{ready, banned}, cuts, "toronto", "2026-07-22", "Main")
+	if err != nil || len(clips) != 1 || len(omitted) != 1 || omitted[0].Title != "banned" {
+		t.Fatalf("clips=%s omitted=%+v err=%v", clips, omitted, err)
+	}
+	for id, items := range cuts {
+		if err := database.ReplaceProductionCuts("toronto", id, items); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h := &Handler{DB: database, BTCPP: productionCandidatesStub{candidates: []btcppclient.Candidate{ready.Candidate, banned.Candidate}}}
+	for _, id := range []string{"banned", "missing", ""} {
+		form := url.Values{"conference": {"toronto"}, "day": {"2026-07-22"}, "stage": {"Main"}, "selection": {"explicit"}}
+		if id != "" {
+			form.Set("talk_ids", id)
+		}
+		r := httptest.NewRequest("POST", "/production/renders/create-livestream", strings.NewReader(form.Encode()))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		w := httptest.NewRecorder()
+		h.productionRenderCreateLivestream(w, r)
+		if w.Code != 400 {
+			t.Fatalf("%s accepted: %s", id, w.Body.String())
+		}
+	}
+	drafts, _ := database.ListProductionRenders("toronto")
+	if len(drafts) != 0 {
+		t.Fatal("failed selection created a draft")
+	}
+}
+func TestTalkCutsInheritTranscriptionWithoutTranscribingCards(t *testing.T) {
+	for _, value := range []string{"true", "false"} {
+		recipe := []json.RawMessage{json.RawMessage(`{"type":"streamctl.talkCard"}`), json.RawMessage(`{"type":"streamctl.talkCuts","transcribe":` + value + `,"overlay":"toronto/recordings/overlay.png"}`)}
+		if err := validateProductionTemplateSegment(recipe[1]); err != nil {
+			t.Fatal(err)
+		}
+		segments, err := expandProductionTemplate(recipe, "toronto", "a", "toronto/talks/a.png", []db.ProductionCut{{SourceType: "video", Source: "toronto/recordings/talk.mp4", InMS: 0, OutMS: 1000}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(segments[0]), "transcribe") || !strings.Contains(string(segments[1]), `"transcribe":`+value) || !strings.Contains(string(segments[1]), "overlay.png") {
+			t.Fatalf("segments %s", segments)
+		}
+	}
+}
+
+func TestLivestreamExplicitSelectionCanSpanDaysAndStages(t *testing.T) {
+	d := productionHandlerTestDB(t)
+	a := livestreamCandidate("a", "2026-07-22T10:00:00-04:00", "one")
+	b := livestreamCandidate("b", "2026-07-22T11:00:00-04:00", "two")
+	c := livestreamCandidate("c", "2026-07-23T10:00:00-04:00", "one")
+	cut := db.ProductionCut{SourceType: "video", Source: "toronto/recordings/talk.mp4", InMS: 0, OutMS: 10000}
+	for _, id := range []string{"a", "b", "c"} {
+		if err := d.ReplaceProductionCuts("toronto", id, []db.ProductionCut{cut}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h := &Handler{DB: d, BTCPP: productionCandidatesStub{candidates: []btcppclient.Candidate{c.Candidate, b.Candidate, a.Candidate}}}
+	form := url.Values{"conference": {"toronto"}, "selection": {"explicit"}, "talk_ids": {"c", "a", "b"}}
+	r := httptest.NewRequest("POST", "/production/renders/create-livestream", strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	h.productionRenderCreateLivestream(w, r)
+	if w.Code != 200 {
+		t.Fatal(w.Body.String())
+	}
+	drafts, err := d.ListProductionRenders("toronto")
+	if err != nil || len(drafts) != 1 {
+		t.Fatalf("drafts %v %v", drafts, err)
+	}
+	var manifest productionRenderManifest
+	if err := json.Unmarshal([]byte(drafts[0].JSON), &manifest); err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []string{"a", "b", "c"} {
+		clip, err := renderdraft.DecodeClip(manifest.Jobs[0].Segments[i])
+		if err != nil || clip.Talk.ID != want {
+			t.Fatalf("clip %d=%+v %v", i, clip, err)
+		}
+	}
+}
+
+func TestRestrictedTalkRequiresIndividualSelection(t *testing.T) {
+	d := productionHandlerTestDB(t)
+	talk := livestreamCandidate("restricted", "2026-07-22T10:00:00-04:00", "one")
+	talk.Eligible = false
+	talk.RecordingPolicy = "prohibited"
+	talk.Reasons = []string{"speaker_recording_consent_prohibits_recording"}
+	cut := db.ProductionCut{SourceType: "video", Source: "toronto/recordings/talk.mp4", InMS: 0, OutMS: 10000}
+	if err := d.ReplaceProductionCuts("toronto", talk.TalkID, []db.ProductionCut{cut}); err != nil {
+		t.Fatal(err)
+	}
+	h := &Handler{DB: d, BTCPP: productionCandidatesStub{candidates: []btcppclient.Candidate{talk.Candidate}}}
+	w := httptest.NewRecorder()
+	h.productionLivestreamOptions(w, httptest.NewRequest("GET", "/production/renders/livestream-options?conference=toronto", nil))
+	if !strings.Contains(w.Body.String(), `"manualOnly":true`) || !strings.Contains(w.Body.String(), `"ready":true`) {
+		t.Fatal(w.Body.String())
+	}
+	for _, explicit := range []bool{false, true} {
+		form := url.Values{"conference": {"toronto"}, "day": {"2026-07-22"}, "stage": {"Main"}}
+		if explicit {
+			form.Set("selection", "explicit")
+			form.Add("talk_ids", "restricted")
+		}
+		r := httptest.NewRequest("POST", "/production/renders/create-livestream", strings.NewReader(form.Encode()))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		w = httptest.NewRecorder()
+		h.productionRenderCreateLivestream(w, r)
+		want := 400
+		if explicit {
+			want = 200
+		}
+		if w.Code != want {
+			t.Fatalf("explicit=%v: %d %s", explicit, w.Code, w.Body.String())
+		}
+	}
+	drafts, _ := d.ListProductionRenders("toronto")
+	if len(drafts) != 1 || !strings.Contains(drafts[0].JSON, `"recordingPolicy": "prohibited"`) {
+		t.Fatalf("restricted metadata lost: %+v", drafts)
 	}
 }

@@ -1,27 +1,21 @@
 {{define "gpu_job_logs.html"}}{{template "layout" .}}{{end}}
 {{define "content"}}
-<div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px;">
-	<div>
-		<h2 style="margin: 0;">GPU Job Logs</h2>
-		<div class="muted" style="font-size: 12px;"><code>{{.Job.UnitName}}</code> on <code>{{.Host}}</code></div>
-	</div>
-	<a href="/worker" class="btn" style="margin-left: auto;">Back to worker</a>
-	<a href="/gpu-worker/logs/{{.Job.UnitName}}" class="btn">Refresh</a>
-</div>
-
-<section class="unit-log">
-	<header>
-		<h3>{{if .Job.Description}}{{.Job.Description}}{{else}}GPU job{{end}}</h3>
-		<code>{{.Job.UnitName}}</code>
-	</header>
-	<div class="unit-meta">
-		<span>Loaded: {{if .Job.LoadedState}}{{.Job.LoadedState}}{{else}}unknown{{end}}</span>
-		<span>Active: {{if .Job.ActiveState}}{{.Job.ActiveState}}{{else}}unknown{{end}}</span>
-		<span>Sub: {{if .Job.SubState}}{{.Job.SubState}}{{else}}unknown{{end}}</span>
-		<span>Result: {{if .Job.Result}}{{.Job.Result}}{{else}}unknown{{end}}</span>
-		{{if .Job.Since}}<span>Since: {{.Job.Since}}</span>{{end}}
-	</div>
-	{{if .Job.Error}}<div class="inline-error">{{.Job.Error}}</div>{{end}}
-	<pre class="log-output">{{.Job.Journal}}</pre>
+<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px"><div><h2 style="margin:0">Job logs</h2><div class="muted"><code>{{.Job.UnitName}}</code> · <span id="log-host">{{.Host}}</span></div></div><a href="/worker" class="btn" style="margin-left:auto">Back to worker</a><a href="/worker/jobs" class="btn">See all jobs</a><button type="button" class="btn" id="refresh-log">Refresh</button></div>
+<section class="unit-log"><header><h3>{{if .Job.Description}}{{.Job.Description}}{{else}}GPU job{{end}}</h3><span id="log-state" class="badge">{{.Job.ActiveState}} · {{.Job.Result}}</span></header>
+<p class="muted" id="log-update-status" role="status">Updates automatically</p>
+<p id="log-warning" class="muted" {{if not .Warning}}hidden{{end}}>{{.Warning}}</p>
+<p id="log-error" class="inline-error" {{if not .Job.Error}}hidden{{end}}>{{.Job.Error}}</p>
+<div style="display:flex;align-items:center;gap:12px;padding:8px"><label><input id="log-follow" type="checkbox" checked> Follow latest output</label><button type="button" class="btn" id="copy-log">Copy logs</button></div>
+<pre class="log-output" id="job-log" tabindex="0" aria-label="Job output" style="max-height:65vh;overflow:auto">{{.Job.Journal}}</pre>
 </section>
+{{template "liveUpdates"}}
+<script>
+{const output=document.getElementById('job-log'),follow=document.getElementById('log-follow'),state=document.getElementById('log-state'),warning=document.getElementById('log-warning'),error=document.getElementById('log-error'),status=document.getElementById('log-update-status');
+const bottom=()=>output.scrollTop=output.scrollHeight;
+follow.onchange=()=>{if(follow.checked)bottom()};
+output.addEventListener('scroll',()=>{if(output.scrollHeight-output.clientHeight-output.scrollTop>32)follow.checked=false});
+createLiveUpdates({url:location.pathname+'?format=json',status,button:document.getElementById('refresh-log'),apply:raw=>{const result=JSON.parse(raw),top=output.scrollTop;if(output.textContent!==result.job.Journal)output.textContent=result.job.Journal;document.getElementById('log-host').textContent=result.host;state.textContent=[result.job.ActiveState,result.job.Result].filter(Boolean).join(' · ');warning.textContent=result.warning;warning.hidden=!result.warning;error.textContent=result.job.Error;error.hidden=!result.job.Error;if(follow.checked)bottom();else output.scrollTop=top;}});
+document.getElementById('copy-log').onclick=async()=>{try{await navigator.clipboard.writeText(output.textContent);status.textContent='Logs copied'}catch{status.textContent='Could not copy logs. Select the text to copy it.'}};
+bottom();}
+</script>
 {{end}}

@@ -24,6 +24,12 @@ type productionLivestreamOmission struct {
 	Reason string `json:"reason"`
 }
 
+type livestreamTalkOption struct {
+	productionTalkView
+	Ready  bool   `json:"ready"`
+	Reason string `json:"reason"`
+}
+
 func livestreamDay(talk productionTalkView) string {
 	if talk.StartsAt == nil {
 		return ""
@@ -105,19 +111,56 @@ func (h *Handler) productionLivestreamOptions(w http.ResponseWriter, r *http.Req
 		livestreamResponse(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
 	}
-	livestreamResponse(w, http.StatusOK, map[string]any{"days": livestreamChoices(talks)})
+	cuts, err := h.DB.ListProductionCuts(conference)
+	if err != nil {
+		livestreamResponse(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	id, err := strconv.ParseInt(r.URL.Query().Get("template_id"), 10, 64)
+	if r.URL.Query().Get("template_id") == "" {
+		id, err = 0, nil
+	}
+	if err != nil || id < 0 {
+		livestreamResponse(w, 400, map[string]string{"error": "Choose a valid talk template."})
+		return
+	}
+	_, recipe, err := h.clipRecipe(conference, id)
+	if err != nil || !recipeNeedsTalk(recipe) {
+		livestreamResponse(w, 400, map[string]string{"error": "Choose a template with talk placeholders."})
+		return
+	}
+	options := []livestreamTalkOption{}
+	for _, talk := range talks {
+		if livestreamDay(talk) == "" || productionStageLabel(talk.Venue) == "" {
+			continue
+		}
+		option := livestreamTalkOption{productionTalkView: talk, Ready: true}
+		switch {
+		case !talkAllowsIndividualSelection(talk):
+			option.Reason = "Not eligible for video rendering"
+		case recipeNeedsCuts(recipe) && len(cuts[talk.TalkID]) == 0:
+			option.Reason = "No saved cuts"
+		default:
+			if _, err := expandProductionTemplate(recipe, conference, talk.TalkID, talk.SocialCard, cuts[talk.TalkID], talk.Title); err != nil {
+				option.Reason = err.Error()
+			}
+		}
+		option.Ready = option.Reason == ""
+		options = append(options, option)
+	}
+	livestreamResponse(w, http.StatusOK, map[string]any{"days": livestreamChoices(talks), "talks": options})
 }
 
 // Assemble a snapshot: workers receive only ordinary conf-render segments.
 func assembleLivestream(talks []productionTalkView, cuts map[string][]db.ProductionCut, conference, day, stage string, recipes ...[]json.RawMessage) (string, []json.RawMessage, []productionLivestreamOmission, error) {
 	selected := []productionTalkView{}
 	for _, talk := range talks {
-		if livestreamDay(talk) == day && productionStageLabel(talk.Venue) == stage && stage != "" {
+		if livestreamDay(talk) != "" && productionStageLabel(talk.Venue) != "" && ((day == "" && stage == "") || (livestreamDay(talk) == day && productionStageLabel(talk.Venue) == stage && stage != "")) {
 			selected = append(selected, talk)
 		}
 	}
 	if len(selected) == 0 {
-		return "", nil, nil, fmt.Errorf("Choose a day and stage from the current schedule.")
+		return "", nil, nil, fmt.Errorf("Choose at least one scheduled talk.")
 	}
 	sort.Slice(selected, func(i, j int) bool {
 		left, _ := time.Parse(time.RFC3339, *selected[i].StartsAt)
@@ -129,23 +172,35 @@ func assembleLivestream(talks []productionTalkView, cuts map[string][]db.Product
 	})
 	label := selected[0].DayLabel
 	if label == "" {
-		label = day
+		label = livestreamDay(selected[0])
 	}
-	name := label + " — " + stage + " livestream"
+	name := label + " — " + productionStageLabel(selected[0].Venue) + " livestream"
+	for _, talk := range selected[1:] {
+		if livestreamDay(talk) != livestreamDay(selected[0]) {
+			name = conference + " livestream"
+			break
+		}
+		if productionStageLabel(talk.Venue) != productionStageLabel(selected[0].Venue) {
+			name = label + " livestream"
+		}
+	}
 	segments := []json.RawMessage{}
 	omitted := []productionLivestreamOmission{}
-	recipe := []json.RawMessage{json.RawMessage(`{"type":"streamctl.talkCard"}`), json.RawMessage(`{"type":"streamctl.talkCuts"}`)}
+	recipe := defaultTalkRecipe
 	if len(recipes) > 0 {
 		recipe = recipes[0]
 	}
 	for _, talk := range selected {
 		reasons := []string{}
+		if (!talk.Eligible || talk.RecordingPolicy == "prohibited") && !(day == "" && stage == "" && talkAllowsIndividualSelection(talk)) {
+			reasons = append(reasons, "Not eligible for video rendering")
+		}
 		if recipeNeedsCuts(recipe) && len(cuts[talk.TalkID]) == 0 {
 			reasons = append(reasons, "No saved cuts")
 		}
 		expanded, err := expandProductionTemplate(recipe, conference, talk.TalkID, talk.SocialCard, cuts[talk.TalkID], talk.Title, productionTalkSchedule(talk.StartsAt, talk.EndsAt))
 		if err != nil {
-			reasons = append(reasons, "Missing or invalid saved title card")
+			reasons = append(reasons, err.Error())
 		}
 		if len(reasons) > 0 {
 			omitted = append(omitted, productionLivestreamOmission{Title: talk.Title, Reason: strings.Join(reasons, "; ")})
@@ -189,7 +244,48 @@ func (h *Handler) productionRenderCreateLivestream(w http.ResponseWriter, r *htt
 		fail(400, fmt.Errorf("Choose a template with talk placeholders"))
 		return
 	}
-	name, segments, omitted, err := assembleLivestream(talks, cuts, conference, strings.TrimSpace(r.FormValue("day")), strings.TrimSpace(r.FormValue("stage")), recipe)
+	// Explicit selections are validated against the fresh schedule, never trusted
+	// from the dialog. Legacy callers without a selection still assemble ready talks.
+	if r.FormValue("selection") == "explicit" {
+		wanted := map[string]bool{}
+		for _, id := range r.Form["talk_ids"] {
+			wanted[id] = true
+		}
+		if len(wanted) == 0 {
+			fail(400, fmt.Errorf("Choose at least one talk."))
+			return
+		}
+		selected := []productionTalkView{}
+		for _, talk := range talks {
+			if !wanted[talk.TalkID] {
+				continue
+			}
+			if livestreamDay(talk) == "" || productionStageLabel(talk.Venue) == "" || !talkAllowsIndividualSelection(talk) {
+				fail(400, fmt.Errorf("%s is no longer available for video rendering. Review your selection.", talk.Title))
+				return
+			}
+			if recipeNeedsCuts(recipe) && len(cuts[talk.TalkID]) == 0 {
+				fail(400, fmt.Errorf("%s has no saved cuts. Review your selection.", talk.Title))
+				return
+			}
+			if _, err := expandProductionTemplate(recipe, conference, talk.TalkID, talk.SocialCard, cuts[talk.TalkID], talk.Title); err != nil {
+				fail(400, err)
+				return
+			}
+			selected = append(selected, talk)
+			delete(wanted, talk.TalkID)
+		}
+		if len(wanted) != 0 {
+			fail(400, fmt.Errorf("A selected talk is no longer available."))
+			return
+		}
+		talks = selected
+	}
+	day, stage := strings.TrimSpace(r.FormValue("day")), strings.TrimSpace(r.FormValue("stage"))
+	if r.FormValue("selection") == "explicit" {
+		day, stage = "", ""
+	}
+	name, segments, omitted, err := assembleLivestream(talks, cuts, conference, day, stage, recipe)
 	for i, raw := range segments {
 		var clip renderdraft.Clip
 		_ = json.Unmarshal(raw, &clip)
@@ -201,7 +297,7 @@ func (h *Handler) productionRenderCreateLivestream(w http.ResponseWriter, r *htt
 		return
 	}
 	if len(segments) == 0 {
-		livestreamResponse(w, http.StatusBadRequest, map[string]any{"error": "No talks are ready for this day and stage.", "omitted": omitted})
+		livestreamResponse(w, http.StatusBadRequest, map[string]any{"error": "No talks are ready for this selection.", "omitted": omitted})
 		return
 	}
 	manifest, err := productionRenderManifestJSON(name, json.RawMessage(`{}`), segments)

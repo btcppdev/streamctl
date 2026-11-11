@@ -16,6 +16,24 @@ type productionRecordingNotice struct {
 	Level  string `json:"level"`
 }
 
+// Recording restrictions remain visible editorial guidance. A restricted talk
+// can be deliberately selected on its own, but must not enter a bulk selection.
+// Other website eligibility failures still apply.
+func talkAllowsIndividualSelection(talk productionTalkView) bool {
+	if talk.Eligible {
+		return true
+	}
+	if talk.RecordingPolicy != "prohibited" {
+		return false
+	}
+	for _, reason := range talk.Reasons {
+		if reason != "speaker_recording_consent_prohibits_recording" {
+			return false
+		}
+	}
+	return true
+}
+
 func recordingPolicyNotice(policy string) productionRecordingNotice {
 	switch policy {
 	case "full", "record":
