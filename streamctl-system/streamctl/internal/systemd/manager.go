@@ -26,9 +26,6 @@ type Manager struct {
 	NotifyEmail    string
 	SendmailPath   string
 	CleanupCache   bool
-	Normalize      bool
-	VideoBitrate   string
-	AudioBitrate   string
 	NostrKeyDir    string
 	PublicBaseURL  string
 	SelfPath       string
@@ -540,203 +537,6 @@ func normalizeOnCalendar(onCalendar string) string {
 	return onCalendar
 }
 
-func (m *Manager) renderPrefetchScript(s *db.Stream) string {
-	var b strings.Builder
-	b.WriteString("#!/run/current-system/sw/bin/bash\n")
-	b.WriteString("set -euo pipefail\n")
-	b.WriteString("export PATH=/run/current-system/sw/bin:/bin\n")
-	if strings.TrimSpace(m.NotifyEmail) != "" {
-		b.WriteString(m.renderNotifyFunction(s))
-		b.WriteString("trap 'rc=$?; notify failure; exit $rc' ERR\n")
-	}
-	if m.normalizeStream(s) {
-		b.WriteString(m.renderPrefetchFallbackFunctions(s))
-	}
-	for _, v := range s.Videos {
-		if !isRemoteClip(v) {
-			continue
-		}
-		raw := m.rawRemoteClipPath(v)
-		local := m.localClipPath(s, v)
-		remote := m.remoteObjectPath(v)
-		b.WriteString("/run/current-system/sw/bin/mkdir -p ")
-		b.WriteString(shellQuote(filepath.Dir(raw)))
-		if m.normalizeStream(s) {
-			b.WriteString(" ")
-			b.WriteString(shellQuote(filepath.Dir(local)))
-		}
-		b.WriteString("\n")
-		if m.normalizeStream(s) {
-			b.WriteString("if [ -f ")
-			b.WriteString(shellQuote(local))
-			b.WriteString(" ] && /run/current-system/sw/bin/ffprobe -v error -show_streams ")
-			b.WriteString(shellQuote(local))
-			b.WriteString(" >/dev/null; then\n")
-			b.WriteString("  echo ")
-			b.WriteString(shellQuote("prefetch: using normalized cache " + v))
-			b.WriteString("\n")
-			b.WriteString("else\n")
-			normalizedRemote := m.remoteObjectPath(m.normalizedRemoteClipPath(v))
-			readyRemote := normalizedRemote + ".ready.json"
-			b.WriteString("if /run/current-system/sw/bin/rclone lsjson ")
-			b.WriteString(shellQuote(readyRemote))
-			b.WriteString(" >/dev/null 2>&1; then\n")
-			b.WriteString("  echo ")
-			b.WriteString(shellQuote("prefetch: fetching preprocessed normalized Spaces object " + m.normalizedRemoteClipPath(v)))
-			b.WriteString("\n")
-			b.WriteString("  if /run/current-system/sw/bin/rclone copyto ")
-			b.WriteString(shellQuote(normalizedRemote))
-			b.WriteString(" ")
-			b.WriteString(shellQuote(local))
-			b.WriteString(" && /run/current-system/sw/bin/ffprobe -v error -show_streams ")
-			b.WriteString(shellQuote(local))
-			b.WriteString(" >/dev/null; then\n")
-			b.WriteString("    echo ")
-			b.WriteString(shellQuote("prefetch: using preprocessed normalized Spaces object " + v))
-			b.WriteString("\n")
-			b.WriteString("  else\n")
-			b.WriteString("    echo ")
-			b.WriteString(shellQuote("prefetch: preprocessed normalized Spaces object failed verification; falling back to raw " + v))
-			b.WriteString("\n")
-			b.WriteString("    /run/current-system/sw/bin/rm -f -- ")
-			b.WriteString(shellQuote(local))
-			b.WriteString("\n")
-			b.WriteString("  fi\n")
-			b.WriteString("fi\n")
-			b.WriteString("if [ ! -f ")
-			b.WriteString(shellQuote(local))
-			b.WriteString(" ]; then\n")
-		}
-		b.WriteString("if [ -f ")
-		b.WriteString(shellQuote(raw))
-		b.WriteString(" ] && /run/current-system/sw/bin/ffprobe -v error -show_streams ")
-		b.WriteString(shellQuote(raw))
-		b.WriteString(" >/dev/null; then\n")
-		b.WriteString("  echo ")
-		b.WriteString(shellQuote("prefetch: using raw cache " + v))
-		b.WriteString("\n")
-		b.WriteString("else\n")
-		b.WriteString("/run/current-system/sw/bin/rclone copyto ")
-		b.WriteString(shellQuote(remote))
-		b.WriteString(" ")
-		b.WriteString(shellQuote(raw))
-		b.WriteString("\n")
-		b.WriteString("fi\n")
-		if m.normalizeStream(s) {
-			b.WriteString(m.renderNormalizeCommand(raw, local, remote))
-			b.WriteString("fi\n")
-			b.WriteString("fi\n")
-		}
-	}
-	b.WriteString(m.renderProbeScriptBody(s))
-	if strings.TrimSpace(m.NotifyEmail) != "" {
-		b.WriteString("notify success\n")
-	}
-	return b.String()
-}
-
-func (m *Manager) renderPrefetchFallbackFunctions(s *db.Stream) string {
-	var b strings.Builder
-	b.WriteString("seconds_until_stream() {\n")
-	b.WriteString("  next=\"$(/run/current-system/sw/bin/systemctl show ")
-	b.WriteString(shellQuote(m.timerName(s.ID)))
-	b.WriteString(" --property=NextElapseRealtime --value 2>/dev/null || true)\"\n")
-	b.WriteString("  if [ -z \"$next\" ] || [ \"$next\" = \"n/a\" ]; then echo 999999; return; fi\n")
-	b.WriteString("  next_epoch=\"$(/run/current-system/sw/bin/date -d \"$next\" +%s 2>/dev/null || true)\"\n")
-	b.WriteString("  now_epoch=\"$(/run/current-system/sw/bin/date +%s)\"\n")
-	b.WriteString("  if [ -z \"$next_epoch\" ]; then echo 999999; return; fi\n")
-	b.WriteString("  echo $((next_epoch - now_epoch))\n")
-	b.WriteString("}\n")
-	b.WriteString("should_use_raw_fallback() {\n")
-	b.WriteString("  seconds=\"$(seconds_until_stream)\"\n")
-	b.WriteString("  [ \"$seconds\" -le 7200 ]\n")
-	b.WriteString("}\n")
-	return b.String()
-}
-
-func (m *Manager) renderNormalizeCommand(input, output, remote string) string {
-	tmp := output + ".tmp.mp4"
-	var b strings.Builder
-	b.WriteString("echo ")
-	b.WriteString(shellQuote("prefetch: normalizing " + filepath.Base(input)))
-	b.WriteString("\n")
-	b.WriteString("/run/current-system/sw/bin/rm -f -- ")
-	b.WriteString(shellQuote(tmp))
-	b.WriteString("\n")
-	b.WriteString("if /run/current-system/sw/bin/ffmpeg -hide_banner -loglevel error -stats_period 30 -progress pipe:1 -y -i ")
-	b.WriteString(shellQuote(input))
-	b.WriteString(" -map 0:v:0 -map 0:a:0 -dn -sn")
-	b.WriteString(" -c:v libx264 -preset veryfast -profile:v high -pix_fmt yuv420p")
-	b.WriteString(" -r 30 -g 60 -keyint_min 60 -sc_threshold 0")
-	b.WriteString(" -b:v ")
-	b.WriteString(shellQuote(m.normalizeVideoBitrate()))
-	b.WriteString(" -minrate ")
-	b.WriteString(shellQuote(m.normalizeVideoBitrate()))
-	b.WriteString(" -maxrate ")
-	b.WriteString(shellQuote(m.normalizeVideoBitrate()))
-	b.WriteString(" -bufsize ")
-	b.WriteString(shellQuote(m.normalizeBufsize()))
-	b.WriteString(" -x264-params ")
-	b.WriteString(shellQuote("nal-hrd=cbr:force-cfr=1"))
-	b.WriteString(" -c:a aac -b:a ")
-	b.WriteString(shellQuote(m.normalizeAudioBitrate()))
-	b.WriteString(" -ar 48000 -ac 2 -movflags +faststart ")
-	b.WriteString(shellQuote(tmp))
-	b.WriteString(" && /run/current-system/sw/bin/mv -f -- ")
-	b.WriteString(shellQuote(tmp))
-	b.WriteString(" ")
-	b.WriteString(shellQuote(output))
-	b.WriteString(" && /run/current-system/sw/bin/ffprobe -v error -show_streams ")
-	b.WriteString(shellQuote(output))
-	b.WriteString(" >/dev/null; then\n")
-	b.WriteString("  echo ")
-	b.WriteString(shellQuote("prefetch: normalized ready " + filepath.Base(output)))
-	b.WriteString("\n")
-	b.WriteString("else\n")
-	b.WriteString("  rc=$?\n")
-	b.WriteString("  echo ")
-	b.WriteString(shellQuote("prefetch: normalization failed for " + filepath.Base(input)))
-	b.WriteString("\n")
-	b.WriteString("  /run/current-system/sw/bin/rm -f -- ")
-	b.WriteString(shellQuote(tmp))
-	b.WriteString("\n")
-	b.WriteString("  if should_use_raw_fallback; then\n")
-	b.WriteString("    echo ")
-	b.WriteString(shellQuote("prefetch: using raw fallback for " + filepath.Base(input)))
-	b.WriteString("\n")
-	b.WriteString("    /run/current-system/sw/bin/rm -f -- ")
-	b.WriteString(shellQuote(output))
-	b.WriteString("\n")
-	b.WriteString("    if [ -f ")
-	b.WriteString(shellQuote(input))
-	b.WriteString(" ] && /run/current-system/sw/bin/ffprobe -v error -show_streams ")
-	b.WriteString(shellQuote(input))
-	b.WriteString(" >/dev/null; then\n")
-	b.WriteString("      /run/current-system/sw/bin/cp -f -- ")
-	b.WriteString(shellQuote(input))
-	b.WriteString(" ")
-	b.WriteString(shellQuote(output))
-	b.WriteString("\n")
-	b.WriteString("    else\n")
-	b.WriteString("      /run/current-system/sw/bin/rclone copyto ")
-	b.WriteString(shellQuote(remote))
-	b.WriteString(" ")
-	b.WriteString(shellQuote(output))
-	b.WriteString("\n")
-	b.WriteString("    fi\n")
-	b.WriteString("    /run/current-system/sw/bin/ffprobe -v error -show_streams ")
-	b.WriteString(shellQuote(output))
-	b.WriteString(" >/dev/null\n")
-	b.WriteString("    /run/current-system/sw/bin/ls -lh ")
-	b.WriteString(shellQuote(output))
-	b.WriteString("\n")
-	b.WriteString("  else\n")
-	b.WriteString("    exit \"$rc\"\n")
-	b.WriteString("  fi\n")
-	b.WriteString("fi\n")
-	return b.String()
-}
-
 func (m *Manager) renderRunScript(s *db.Stream) string {
 	var b strings.Builder
 	b.WriteString("#!/run/current-system/sw/bin/bash\n")
@@ -917,13 +717,16 @@ func (m *Manager) renderProbeScript(s *db.Stream) string {
 }
 
 func (m *Manager) renderProbeScriptBody(s *db.Stream) string {
-	var b strings.Builder
-	for _, v := range s.Videos {
-		local := m.localClipPath(s, v)
-		b.WriteString("/run/current-system/sw/bin/ffprobe -v error -show_streams ")
-		b.WriteString(shellQuote(local))
-		b.WriteString(" >/dev/null\n")
+	bin := strings.TrimSpace(m.SelfPath)
+	if bin == "" {
+		bin = "/run/current-system/sw/bin/cmd"
 	}
+	var b strings.Builder
+	b.WriteString(shellQuote(bin) + " stream-check")
+	for _, source := range s.Videos {
+		b.WriteString(" -file " + shellQuote(m.localClipPath(s, source)))
+	}
+	b.WriteString("\n")
 	return b.String()
 }
 
@@ -967,16 +770,8 @@ func (m *Manager) needsPrefetch(s *db.Stream) bool {
 	return false
 }
 
-// Imported talks are finished renders; prefetch and stream their original bytes.
-func (m *Manager) normalizeStream(s *db.Stream) bool {
-	return m.Normalize && !s.AutoScheduled
-}
-
 func (m *Manager) localClipPath(s *db.Stream, source string) string {
 	if isRemoteClip(source) {
-		if m.normalizeStream(s) {
-			return m.normalizedClipPath(source)
-		}
 		return filepath.Join(m.CacheDir, source)
 	}
 	return filepath.Join(m.VideoDir, source)
@@ -986,26 +781,12 @@ func (m *Manager) rawRemoteClipPath(source string) string {
 	return filepath.Join(m.CacheDir, source)
 }
 
-func (m *Manager) normalizedClipPath(source string) string {
-	ext := filepath.Ext(source)
-	base := strings.TrimSuffix(source, ext)
-	return filepath.Join(m.CacheDir, "normalized", base+".mp4")
-}
-
-func (m *Manager) normalizedRemoteClipPath(source string) string {
-	return strings.Replace(source, "/recordings/edits/", "/recordings/normalized/", 1)
-}
-
 func (m *Manager) remoteObjectPath(source string) string {
 	return strings.TrimRight(m.Remote, "/") + slashForRemote(m.Remote) + source
 }
 
 func (m *Manager) remoteCachePaths(s *db.Stream, source string) []string {
-	paths := []string{m.rawRemoteClipPath(source)}
-	if m.normalizeStream(s) {
-		paths = append(paths, m.normalizedClipPath(source))
-	}
-	return paths
+	return []string{m.rawRemoteClipPath(source)}
 }
 
 func isRemoteClip(source string) bool {
@@ -1162,29 +943,4 @@ func (m *Manager) sendmailPath() string {
 		return m.SendmailPath
 	}
 	return "/run/current-system/sw/bin/sendmail"
-}
-
-func (m *Manager) normalizeVideoBitrate() string {
-	if strings.TrimSpace(m.VideoBitrate) != "" {
-		return strings.TrimSpace(m.VideoBitrate)
-	}
-	return "6800k"
-}
-
-func (m *Manager) normalizeAudioBitrate() string {
-	if strings.TrimSpace(m.AudioBitrate) != "" {
-		return strings.TrimSpace(m.AudioBitrate)
-	}
-	return "160k"
-}
-
-func (m *Manager) normalizeBufsize() string {
-	video := m.normalizeVideoBitrate()
-	if strings.HasSuffix(video, "k") {
-		n, err := strconv.Atoi(strings.TrimSuffix(video, "k"))
-		if err == nil && n > 0 {
-			return strconv.Itoa(n*2) + "k"
-		}
-	}
-	return video
 }

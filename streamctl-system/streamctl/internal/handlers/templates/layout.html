@@ -127,13 +127,6 @@ form { background: var(--panel); border: 1px solid var(--border); border-radius:
 .muted { color: var(--muted); }
 code { background: var(--bg); padding: 1px 4px; border-radius: 3px; font-size: 12px; overflow-wrap: anywhere; word-break: break-word; }
 .table-wrap { width: 100%; overflow-x: auto; }
-.normalize-table { table-layout: fixed; }
-.normalize-table th:nth-child(1), .normalize-table td:nth-child(1) { width: 44px; }
-.normalize-table th:nth-child(2), .normalize-table td:nth-child(2) { width: 110px; }
-.normalize-table th:nth-child(5), .normalize-table td:nth-child(5) { width: 110px; }
-.normalize-table th:nth-child(6), .normalize-table td:nth-child(6) { width: 96px; }
-.normalize-table td { vertical-align: top; }
-.normalize-table code { display: block; max-width: 100%; white-space: normal; }
 .unit-log { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; margin: 16px 0; overflow: hidden; }
 .unit-log header { padding: 12px 14px; border-bottom: 1px solid var(--border); gap: 10px; }
 .unit-log h3 { font-size: 15px; margin: 0; }
@@ -235,7 +228,7 @@ function wireProductionSelection(root){
 		<a href="/endpoints">Endpoints</a>
 		<a href="/production">Production</a>
 		<a href="/render">Render</a>
-		<a href="/normalize">Normalize</a>
+
 		<a href="/worker">Worker</a>
 		<a href="/nostr">Nostr</a>
 	</nav>

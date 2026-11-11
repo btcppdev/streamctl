@@ -173,7 +173,7 @@ esac
 		}
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	h := &Handler{DB: database, Remote: "test:bucket", GPUWorkerHost: "worker", GPUWorkerCommand: "/normalize", RenderWorkerCommand: "/render"}
+	h := &Handler{DB: database, Remote: "test:bucket", GPUWorkerHost: "worker", RenderWorkerCommand: "/render"}
 	h.dispatchGPUQueueOnce(context.Background())
 	current, _ := database.ProductionProxyJobBySource(source)
 	if current.Status != "running" || current.WorkerUnit == "" {

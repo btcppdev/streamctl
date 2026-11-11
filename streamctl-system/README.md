@@ -412,3 +412,13 @@ make destroy               # terraform destroy
 **No re-encoding**: streamctl uses `ffmpeg -c copy`, so whatever bitrate is in your source file is what goes to the platforms. Export from your editor at a sensible bitrate (~10 Mbps for 1080p is YouTube's recommendation; CBR is preferred for live ingest). See the streamctl README for more on bitrate tuning.
 
 **Hardening**: The streamctl web service runs as root because it writes to `/etc/systemd/system`. The actual ffmpeg processes drop to a non-root user via the generated unit files. If you want least-privilege for the web layer, the alternative is polkit rules permitting a non-root user to run systemctl on `streamctl-*` units only. Not built yet; PRs welcome.
+
+## Direct streaming and readiness
+
+Finished videos, including conf-render outputs, are streamed directly after
+readiness checks. The former Normalize screen, GPU normalization queue,
+prefetch re-encoding/fallback, and standalone `gpu-upload`/`gpu-transcode`
+commands have been retired. Existing bucket objects and legacy queue records
+are preserved. See `streamctl/README.md` for the readiness contract, removed
+configuration options, and upgrade/resync notes. Recordings folder conventions
+and any object migration are intentionally unchanged.

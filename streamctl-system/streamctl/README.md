@@ -176,13 +176,34 @@ same saved job, including after a restart. Pending, failed, or cancelled plans
 disable matching future jobs. Plans with start times at or before the poll
 time are skipped to avoid replaying old broadcasts or disturbing playback.
 API failures or plans missing from a response do not delete existing jobs.
-Import errors are logged to the streamctl service journal. Imported jobs skip
-normalization even when `-normalize-prefetch` is enabled: prefetch downloads
-and probes the provided Spaces file, and playback streams that original file
-with FFmpeg stream copy. No normalized object or readiness marker is required.
-The render must already have codecs compatible with the destination. Other
-jobs keep the configured normalization behavior. Allow enough lead time before
-the broadcast for polling and downloading the video.
+Import errors are logged to the streamctl service journal. All jobs prefetch and stream the selected original file with FFmpeg
+stream copy. There is no normalization queue, alternate output, or automatic
+encoding fallback. Manual stream creation and edits inspect the selected files;
+all jobs are checked again after download and immediately before playback.
+
+Streaming readiness requires H.264 video, 8-bit yuv420p, progressive scan, a
+valid frame rate up to 60 fps, and stereo AAC at 48 kHz. Concatenated playlists
+must also match resolution, frame rate, pixel format, codecs, and time bases.
+Conf-render's default output meets this contract; custom outputs are inspected
+rather than trusted because of their folder name or a ready marker. Incompatible
+files report the offending clip and format; produce a compatible render before
+scheduling. Checks inspect stream metadata, not a full-file decode or an
+endpoint-specific bitrate/keyframe guarantee.
+
+Any finished recording object can be scheduled directly, including existing
+`recordings/renders/<job-id>/...` outputs, without making `edits` or `normalized`
+copies. Existing objects and queue history remain untouched; old normalization
+queue rows are never dispatched. The Normalize page and its mutation routes
+are retired. Generated services refresh their direct source cache with rclone
+checksum comparison and retain cleanup after successful playback. Allow enough
+lead time for polling and downloading the video.
+
+For an explicit check, run `streamctl stream-check -file /path/to/video.mp4`
+(repeat `-file` for a playlist). The old `-normalize-prefetch`,
+`-normalize-video-bitrate`, `-normalize-audio-bitrate`, and `-gpu-worker-command`
+flags and corresponding NixOS options have been removed. Remove them from
+custom deployment configurations before upgrading. Existing timers must be
+resynced to replace their old generated scripts; no bucket migration is needed.
 
 Set `services.streamctl.btcppAPITokenFile` to that path to enable the
 **Production → Timestamp** workspace. The workspace reads eligible talks from
@@ -207,7 +228,7 @@ talk UUID:
 
 ```bash
 streamctl btcpp-recording -conference dev26 -talk-id TALK_UUID \
-  -file-uri dev26/recordings/normalized/stage-one/talk.mp4
+  -file-uri dev26/recordings/renders/1/talk.mp4
 ```
 
 Use `-api-base http://localhost:8888` for local development. The default is

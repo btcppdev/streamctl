@@ -109,7 +109,7 @@
 		<button type="button" class="btn" onclick="toggleSpacesBrowser()">Browse Spaces</button>
 		{{end}}
 		<div class="hint">
-			Use Spaces <code>recordings/edits</code> paths relative to the configured remote. Remote clips must have verified normalized outputs before scheduling.
+			Use a finished video’s path relative to the configured remote. Conf-render outputs can be scheduled directly. Files and playlist compatibility are checked when saving and before playback; no conversion or duplicate copy is needed.
 		</div>
 		{{end}}
 		{{if .RemoteBrowse}}
