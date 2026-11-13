@@ -10,7 +10,9 @@ DIGITALOCEAN_TOKEN := $(strip $(DIGITAL_OCEAN_TOKEN))
 export DIGITALOCEAN_TOKEN
 
 TERRAFORM := $(shell if command -v terraform >/dev/null 2>&1; then printf 'terraform'; else printf 'nix develop --command terraform'; fi)
-NIXOS_REBUILD := $(shell if command -v nixos-rebuild >/dev/null 2>&1; then printf 'nixos-rebuild'; else printf 'nix develop --command nixos-rebuild'; fi)
+# Keep SSH control sockets below macOS's Unix socket path limit. Set TMPDIR
+# after entering nix develop, which otherwise replaces it with a nested path.
+NIXOS_REBUILD := $(shell if command -v nixos-rebuild >/dev/null 2>&1; then printf 'env TMPDIR=/tmp nixos-rebuild'; else printf 'nix develop --command env TMPDIR=/tmp nixos-rebuild'; fi)
 
 # Optional machine-local deployment settings, excluded from the public repo.
 -include ../.private/deploy.mk

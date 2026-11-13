@@ -393,6 +393,8 @@ make destroy               # terraform destroy
 
 **`make deploy` fails with `hash mismatch in fixed-output derivation`**: This is the `vendorHash = null` placeholder. Copy the suggested hash from the error output into `flake.nix` and re-run.
 
+**`make deploy` fails with `too long for Unix domain socket` on macOS**: The SSH control socket path can exceed macOS's limit when `nix develop` nests temporary directories. The deployment targets run `env TMPDIR=/tmp nixos-rebuild` inside the Nix shell to keep that path short. For manual invocations, use `nix develop --command env TMPDIR=/tmp nixos-rebuild ...`; setting `TMPDIR` before `nix develop` is not enough because the shell replaces it.
+
 **`make wait-for-nixos` times out**: SSH in manually with `ssh root@$(make ip)` and check `tail -f /tmp/infect.log`. If it failed, the log will tell you why; usually a transient network issue, and `cloud-init clean && reboot` will retry.
 
 **ACME / Let's Encrypt fails on first deploy**: DNS probably isn't set up yet, or hasn't propagated. Set the A record, wait, then `make deploy` again.
