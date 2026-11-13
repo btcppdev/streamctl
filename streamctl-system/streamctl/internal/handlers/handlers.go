@@ -1083,8 +1083,9 @@ func (h *Handler) gpuStatus(ctx context.Context, worker gpuWorkerView) gpuStatus
 		if isTerminalGPUJob(job) {
 			full := h.gpuJob(ctx, host, unit, true)
 			h.hydrateGPUJobFromCache(&full)
-			if err := h.saveGPUJobLog(full); err != nil {
+			if _, err := h.retainGPUJobLog(ctx, host, full); err != nil {
 				log.Printf("saving terminal GPU job %s failed: %v", unit, err)
+				continue
 			}
 			h.destroyManagedGPUAfterTerminalJob(ctx, full)
 			go h.dispatchGPUQueueOnce(context.Background())
@@ -1160,7 +1161,7 @@ func (h *Handler) gpuJob(ctx context.Context, host, unit string, includeJournal 
 		}
 	}
 	if includeJournal {
-		journal, err := remoteSSH(ctx, host, "journalctl -u "+shellQuote(unit)+" --no-pager --output=short-iso -n 300")
+		journal, err := remoteSSH(ctx, host, "journalctl -u "+shellQuote(unit)+" --no-pager --output=short-iso")
 		job.Journal = strings.TrimSpace(journal)
 		if err != nil {
 			job.Error = appendGPUError(job.Error, fmt.Errorf("journalctl: %w: %s", err, strings.TrimSpace(journal)))
@@ -1214,6 +1215,21 @@ func (h *Handler) gpuFileJob(ctx context.Context, host, unit string, includeJour
 		}
 	}
 	return job
+}
+
+// Retain the journal before removing the worker or its attempt workspace. A
+// failed/empty read is not a successful archive; callers must retry it later.
+func (h *Handler) retainGPUJobLog(ctx context.Context, host string, job gpuJobView) (gpuJobView, error) {
+	if strings.TrimSpace(job.Journal) == "" || job.Error != "" {
+		job = h.gpuJob(ctx, host, job.UnitName, true)
+	}
+	if job.Error != "" || strings.TrimSpace(job.Journal) == "" || strings.TrimSpace(job.Journal) == "-- No entries --" {
+		return job, fmt.Errorf("could not collect worker log: %s", firstNonEmptyString(job.Error, "empty journal"))
+	}
+	if err := h.saveGPUJobLog(job); err != nil {
+		return job, err
+	}
+	return job, nil
 }
 
 func (h *Handler) saveGPUJobLog(job gpuJobView) error {
@@ -1367,6 +1383,13 @@ func (h *Handler) destroyManagedGPUAfterTerminalJob(ctx context.Context, job gpu
 	shouldDestroy := failed || h.GPUDestroyAfterJob
 	if !shouldDestroy {
 		return
+	}
+	if _, render := renderJobIDFromUnit(job.UnitName); render {
+		saved, err := h.DB.GetGPUJobLog(job.UnitName)
+		if err != nil || strings.TrimSpace(saved.Journal) == "" {
+			log.Printf("GPU worker cleanup skipped after job %s: render log has not been retained", job.UnitName)
+			return
+		}
 	}
 	renderCounts, err := h.DB.RenderQueueStatusCounts()
 	if err != nil {

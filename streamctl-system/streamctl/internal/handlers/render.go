@@ -396,18 +396,11 @@ func (h *Handler) reconcileRenderJobs(ctx context.Context, host string, jobs []g
 		if !isTerminalGPUJob(job) {
 			continue
 		}
-		status, message := "finished", ""
+		status := "finished"
 		if job.ActiveState == "failed" || (job.Result != "" && job.Result != "success") {
 			status = "failed"
-			full := h.gpuJob(ctx, host, job.UnitName, true)
-			message = firstNonEmptyString(gpuFailureJournalSummary(full.Journal), full.Error, full.Result)
 		}
-		if err := h.DB.FinishRenderAttempt(id, item.UnitName, status, message); err != nil {
-			log.Printf("reconciling render job %d failed: %v", id, err)
-			continue
-		}
-		_, _ = remoteSSH(ctx, host, h.renderAttemptCleanupCommand(id, item.UnitName))
-		h.destroyManagedGPUAfterTerminalJob(ctx, job)
+		h.finishRenderAttemptWithLogs(ctx, host, id, item.UnitName, status, "")
 	}
 	running, err := h.DB.ListOpenRenderQueueItems(1000)
 	if err != nil {
@@ -437,13 +430,37 @@ func (h *Handler) reconcileRenderJobs(ctx context.Context, host string, jobs []g
 		if status != "finished" {
 			message = "conf-render exited with status " + exitCode
 		}
-		if err := h.DB.FinishRenderAttempt(item.ID, item.UnitName, status, message); err != nil {
-			log.Printf("reconciling durable render result %d failed: %v", item.ID, err)
-			continue
-		}
-		_, _ = remoteSSH(ctx, host, h.renderAttemptCleanupCommand(item.ID, item.UnitName))
-		h.destroyManagedGPUAfterTerminalJob(ctx, renderTerminalGPUJob(item.UnitName, status))
+		h.finishRenderAttemptWithLogs(ctx, host, item.ID, item.UnitName, status, message)
 	}
+}
+
+// Keep the attempt open until its complete log is durable. That also prevents
+// queue dispatch and automatic worker teardown from racing an unsuccessful read.
+func (h *Handler) finishRenderAttemptWithLogs(ctx context.Context, host string, id int64, unit, status, message string) bool {
+	job, err := h.retainGPUJobLog(ctx, host, gpuJobView{UnitName: unit, Host: host})
+	if err != nil {
+		log.Printf("retaining render job %d logs failed: %v", id, err)
+		_ = h.DB.UpdateRenderQueueError(id, "Waiting to retain worker logs: "+err.Error())
+		return false
+	}
+	if status != "finished" {
+		summary := gpuFailureJournalSummary(job.Journal)
+		if message != "" && summary != "" {
+			message += "\n"
+		}
+		message += summary
+	}
+	if err := h.DB.FinishRenderAttempt(id, unit, status, message); err != nil {
+		log.Printf("finishing render job %d failed: %v", id, err)
+		return false
+	}
+	_, _ = remoteSSH(ctx, host, h.renderAttemptCleanupCommand(id, unit))
+	job.ActiveState, job.Result = "inactive", "success"
+	if status != "finished" {
+		job.ActiveState, job.Result = "failed", "exit-code"
+	}
+	h.destroyManagedGPUAfterTerminalJob(ctx, job)
+	return true
 }
 
 func renderTerminalGPUJob(unit, status string) gpuJobView {
@@ -511,16 +528,16 @@ func (h *Handler) monitorRenderJob(id int64, unit, host string) {
 				return
 			}
 			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
-			out, stopErr := h.stopRemoteRender(cleanupCtx, host, unit, id)
-			cleanupCancel()
+			out, stopErr := remoteSSH(cleanupCtx, host, remoteGPUStopCommand(unit))
 			message := "render monitor timed out"
 			if stopErr != nil {
 				message += "; stopping remote job failed: " + strings.TrimSpace(fmt.Sprintf("%v: %s", stopErr, out))
 			}
-			if err := h.DB.FinishRenderAttempt(id, unit, "failed", message); err != nil {
+			finished := h.finishRenderAttemptWithLogs(cleanupCtx, host, id, unit, "failed", message)
+			cleanupCancel()
+			if !finished {
 				return
 			}
-			h.destroyManagedGPUAfterTerminalJob(context.Background(), renderTerminalGPUJob(unit, "failed"))
 			go h.dispatchGPUQueueOnce(context.Background())
 			return
 		case <-ticker.C:
@@ -532,11 +549,9 @@ func (h *Handler) monitorRenderJob(id int64, unit, host string) {
 				if status != "finished" {
 					message = "conf-render exited with status " + exitCode
 				}
-				if err := h.DB.FinishRenderAttempt(id, unit, status, message); err != nil {
-					return
+				if !h.finishRenderAttemptWithLogs(ctx, host, id, unit, status, message) {
+					continue
 				}
-				_, _ = remoteSSH(ctx, host, h.renderAttemptCleanupCommand(id, unit))
-				h.destroyManagedGPUAfterTerminalJob(ctx, renderTerminalGPUJob(unit, status))
 				go h.dispatchGPUQueueOnce(context.Background())
 				return
 			}
@@ -544,17 +559,13 @@ func (h *Handler) monitorRenderJob(id int64, unit, host string) {
 			if !isTerminalGPUJob(job) {
 				continue
 			}
-			status, message := "finished", ""
+			status := "finished"
 			if job.ActiveState == "failed" || (job.Result != "" && job.Result != "success") {
 				status = "failed"
-				full := h.gpuJob(ctx, host, unit, true)
-				message = firstNonEmptyString(gpuFailureJournalSummary(full.Journal), full.Error, full.Result)
 			}
-			if err := h.DB.FinishRenderAttempt(id, unit, status, message); err != nil {
-				return
+			if !h.finishRenderAttemptWithLogs(ctx, host, id, unit, status, "") {
+				continue
 			}
-			_, _ = remoteSSH(ctx, host, h.renderAttemptCleanupCommand(id, unit))
-			h.destroyManagedGPUAfterTerminalJob(ctx, job)
 			go h.dispatchGPUQueueOnce(context.Background())
 			return
 		}
