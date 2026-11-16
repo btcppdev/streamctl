@@ -6,12 +6,15 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import json
+import math
 import os
 import re
+import signal
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path, PurePosixPath
 
 
@@ -19,15 +22,57 @@ def fail(message: str) -> None:
     raise SystemExit(message)
 
 
-def run(*args: str, capture: bool = False) -> str:
-    print("+ " + " ".join(args), file=sys.stderr)
+def run(*args: str, capture: bool = False, timeout: float | None = None,
+        env: dict | None = None) -> str:
+    if timeout is None:
+        timeout = 120 if args[0] == "rclone" and args[1] in {"lsjson", "lsf", "delete"} else float(os.environ.get("STREAMCTL_TRANSFER_TIMEOUT_SECONDS", "1800"))
+    if not math.isfinite(timeout) or timeout <= 0:
+        fail("worker operation timeout must be positive")
+    if args[0] == "rclone":
+        args = (*args[:2], "--contimeout", "15s", "--timeout", "90s", *args[2:])
+    print("+ " + " ".join(args), file=sys.stderr, flush=True)
+    process = subprocess.Popen(args, text=True, stdout=subprocess.PIPE if capture else None,
+                               stderr=subprocess.PIPE if capture else None,
+                               start_new_session=True, env=env)
     try:
-        result = subprocess.run(args, check=True, text=True, capture_output=capture)
-    except subprocess.CalledProcessError as error:
-        if capture and error.stderr:
-            print(error.stderr, file=sys.stderr)
-        raise
-    return result.stdout if capture else ""
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        # Kill the entire operation, including FFmpeg/download subprocesses.
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.communicate()
+        # The wrapper may have exited while a child ignored SIGTERM.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        fail(f"{Path(args[0]).name} operation timed out after {timeout:g}s")
+    if process.returncode:
+        if capture and stderr:
+            print(stderr, file=sys.stderr)
+        raise subprocess.CalledProcessError(process.returncode, args, stdout, stderr)
+    return stdout if capture else ""
+
+
+def prepare_whisper(renderer: str) -> dict:
+    """Bound cold model download/initialization separately from long encoding."""
+    python = str(Path(renderer).with_name("python"))
+    timeout = float(os.environ.get("STREAMCTL_WHISPER_TIMEOUT_SECONDS", "300"))
+    print(f"render: preparing Whisper model ({timeout:g}s deadline)", file=sys.stderr, flush=True)
+    run(python, "-c",
+        "from conf_render.transcription import load_whisper_runtime; "
+        "load_whisper_runtime('distil-large-v3', print)", timeout=timeout)
+    # The warmed model is now local; avoid network retries in the render lane.
+    return {**os.environ, "HF_HUB_OFFLINE": "1"}
 
 
 def remote_path(remote: str, key: str) -> str:
@@ -121,7 +166,15 @@ def prepare_inputs(remote: str, inputs: Path, fields: list[tuple[str, bool]], ca
     # Serialise only cache preparation, not rendering. An OS lock is released
     # automatically on cancellation; incomplete downloads are never cache hits.
     with (cache / ".lock").open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        deadline = time.monotonic() + 120
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    fail("input cache lock timed out after 120s")
+                time.sleep(0.2)
         for partial in cache.glob("*.part"):
             if re.fullmatch(r"[0-9a-f]{64}\.part", partial.name):
                 partial.unlink()
@@ -133,7 +186,7 @@ def prepare_inputs(remote: str, inputs: Path, fields: list[tuple[str, bool]], ca
                 make_cache_space(cache, metadata["size"] + reserve, protected)
                 partial = cached.with_suffix(".part")
                 try:
-                    run("rclone", "copyto", "--stats", "30s", "--stats-one-line",
+                    run("rclone", "copyto", "--stats", "30s", "--stats-one-line", "--retries", "3",
                         remote_path(remote, key), str(partial))
                     if partial.stat().st_size != metadata["size"] or object_metadata(remote, key) != metadata:
                         fail(f"source changed during download: {key}; retry the job")
@@ -207,7 +260,7 @@ def check_renderer() -> None:
             "settings": {"width": 320, "height": 180, "videoEncoder": "nvenc",
                          "videoBitrate": "6800k", "audioBitrate": "160k", "keyframeInterval": 2},
             "jobs": [{"id": "check", "segments": [{"type": "image", "src": str(image), "durationMs": 2000}]}]}))
-        run(renderer, "render", str(manifest), "--render-only", "--output", str(root / "output"))
+        run(renderer, "render", str(manifest), "--render-only", "--output", str(root / "output"), timeout=120)
 
 
 def main() -> None:
@@ -243,8 +296,9 @@ def main() -> None:
 
     localize_manifest(manifest, inputs)
     localized.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-    run(conf_render, "validate", str(localized))
-    run(conf_render, "render", str(localized), "--output", str(output), "--work-dir", str(work / "conf-render"), "--overwrite")
+    run(conf_render, "validate", str(localized), timeout=120)
+    render_env = prepare_whisper(conf_render) if any(transcription_enabled(job) for job in manifest["jobs"]) else None
+    run(conf_render, "render", str(localized), "--output", str(output), "--work-dir", str(work / "conf-render"), "--overwrite", timeout=48 * 3600, env=render_env)
 
     missing: list[str] = []
     for job in manifest["jobs"]:

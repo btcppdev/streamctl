@@ -246,7 +246,10 @@ func renderWorkspace(id int64) string { return fmt.Sprintf("/workspace/streamctl
 func renderAttemptWorkspace(id int64, unit string) string { return renderWorkspace(id) + "/" + unit }
 
 func remoteSSHInput(ctx context.Context, host, remoteCommand, input string) (string, error) {
-	cmd := exec.CommandContext(ctx, "ssh", sshArgs(host, remoteCommand)...)
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "ssh", sshArgsWithOptions(host, remoteCommand, "-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=2")...)
+	cmd.WaitDelay = 2 * time.Second
 	cmd.Stdin = strings.NewReader(input)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
@@ -373,6 +376,9 @@ func (h *Handler) reconcileRenderJobs(ctx context.Context, host string, jobs []g
 	// attempt as well, including after a controller restart or worker timeout.
 	listed := make(map[string]bool)
 	for _, job := range jobs {
+		if job.Cached {
+			continue
+		}
 		listed[job.UnitName] = true
 	}
 	if items, err := h.DB.ListOpenRenderQueueItems(1000); err == nil {
@@ -384,6 +390,9 @@ func (h *Handler) reconcileRenderJobs(ctx context.Context, host string, jobs []g
 	}
 	seen := make(map[int64]bool)
 	for _, job := range jobs {
+		if job.Cached {
+			continue
+		}
 		id, ok := renderJobIDFromUnit(job.UnitName)
 		if !ok {
 			continue
@@ -400,7 +409,7 @@ func (h *Handler) reconcileRenderJobs(ctx context.Context, host string, jobs []g
 		if job.ActiveState == "failed" || (job.Result != "" && job.Result != "success") {
 			status = "failed"
 		}
-		h.finishRenderAttemptWithLogs(ctx, host, id, item.UnitName, status, "")
+		h.finishRenderAttempt(ctx, host, id, item.UnitName, status, "")
 	}
 	running, err := h.DB.ListOpenRenderQueueItems(1000)
 	if err != nil {
@@ -430,37 +439,105 @@ func (h *Handler) reconcileRenderJobs(ctx context.Context, host string, jobs []g
 		if status != "finished" {
 			message = "conf-render exited with status " + exitCode
 		}
-		h.finishRenderAttemptWithLogs(ctx, host, item.ID, item.UnitName, status, message)
+		h.finishRenderAttempt(ctx, host, item.ID, item.UnitName, status, message)
 	}
 }
 
-// Keep the attempt open until its complete log is durable. That also prevents
-// queue dispatch and automatic worker teardown from racing an unsuccessful read.
-func (h *Handler) finishRenderAttemptWithLogs(ctx context.Context, host string, id int64, unit, status, message string) bool {
-	job, err := h.retainGPUJobLog(ctx, host, gpuJobView{UnitName: unit, Host: host})
-	if err != nil {
-		log.Printf("retaining render job %d logs failed: %v", id, err)
-		_ = h.DB.UpdateRenderQueueError(id, "Waiting to retain worker logs: "+err.Error())
+const gpuLogPendingPrefix = "Log archive pending: "
+const gpuLogCleanupPrefix = gpuLogPendingPrefix + "cleanup: "
+
+// Completion and archival are independent: keep evidence on the worker while
+// releasing the execution queue as soon as its terminal result is confirmed.
+func (h *Handler) finishRenderAttempt(ctx context.Context, host string, id int64, unit, status, message string) bool {
+	item, err := h.DB.GetRenderQueueItem(id)
+	if err != nil || item.Status != "running" || item.UnitName != unit {
 		return false
 	}
-	if status != "finished" {
-		summary := gpuFailureJournalSummary(job.Journal)
-		if message != "" && summary != "" {
-			message += "\n"
-		}
-		message += summary
+	job := renderTerminalGPUJob(unit, status)
+	job.Host = host
+	if cached, err := h.DB.GetGPUJobLog(unit); err == nil {
+		job.Journal = cached.Journal
+	}
+	job.Error = gpuLogPendingPrefix + "waiting for worker output"
+	if err := h.saveGPUJobLog(job); err != nil {
+		log.Printf("recording pending render archive %s: %v", unit, err)
+		return false
 	}
 	if err := h.DB.FinishRenderAttempt(id, unit, status, message); err != nil {
-		log.Printf("finishing render job %d failed: %v", id, err)
+		log.Printf("finishing render job %d: %v", id, err)
 		return false
 	}
-	_, _ = remoteSSH(ctx, host, h.renderAttemptCleanupCommand(id, unit))
-	job.ActiveState, job.Result = "inactive", "success"
-	if status != "finished" {
-		job.ActiveState, job.Result = "failed", "exit-code"
-	}
-	h.destroyManagedGPUAfterTerminalJob(ctx, job)
 	return true
+}
+
+// One bounded archive per background pass. Never re-read completed history and
+// never use a replacement worker to collect a previous worker's output.
+func (h *Handler) retryPendingGPUJobLogs(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	worker := h.gpuWorkerView(ctx)
+	host := firstNonEmptyString(h.GPUWorkerHost, worker.SSHHost)
+	if host == "" || (worker.Managed && worker.Status != "active") {
+		return
+	}
+	logs, err := h.DB.PendingGPUJobLogs(host, gpuLogPendingPrefix)
+	if err != nil {
+		return
+	}
+	for _, saved := range logs {
+		if saved.Host != host || !strings.HasPrefix(saved.Error, gpuLogPendingPrefix) {
+			continue
+		}
+		id, render := renderJobIDFromUnit(saved.UnitName)
+		var item *db.RenderJobQueueItem
+		if render {
+			item, err = h.DB.GetRenderQueueItem(id)
+			if err != nil || (item.UnitName == saved.UnitName && item.Status != "finished" && item.Status != "failed") {
+				continue
+			}
+		}
+		job := gpuJobViewFromDB(saved)
+		if !strings.HasPrefix(saved.Error, gpuLogCleanupPrefix) {
+			job, err = h.retainGPUJobLog(ctx, host, gpuJobView{UnitName: saved.UnitName, Host: host})
+			if err != nil {
+				log.Printf("retaining %s: %v", saved.UnitName, err)
+				// Rotate failed archives so one unavailable log cannot starve the rest.
+				_ = h.saveGPUJobLog(gpuJobView{UnitName: saved.UnitName, Host: host, Error: gpuLogPendingPrefix + err.Error()})
+				return
+			}
+			// The attempt's terminal state is authoritative, not unit metadata.
+			job.ActiveState, job.Result = saved.ActiveState, saved.Result
+			job.Error = gpuLogCleanupPrefix + "waiting for workspace cleanup"
+			if err := h.saveGPUJobLog(job); err != nil {
+				return
+			}
+		}
+		if render && item.UnitName == saved.UnitName && item.Status == "failed" {
+			summary := gpuFailureJournalSummary(job.Journal)
+			if summary != "" && !strings.Contains(item.LastError, summary) {
+				message := strings.TrimSpace(item.LastError + "\n" + summary)
+				_ = h.DB.UpdateRenderQueueError(id, message)
+			}
+		}
+		cleanup := ""
+		if render {
+			cleanup = h.renderAttemptCleanupCommand(id, saved.UnitName)
+		} else {
+			// The workspace is keyed by attempt, so retries cannot remove a newer one.
+			cleanup = "rm -rf -- " + shellQuote(proxyWorkspace(db.ProductionProxyJob{WorkerUnit: saved.UnitName}))
+		}
+		if _, err := remoteSSH(ctx, host, cleanup); err != nil {
+			_ = h.saveGPUJobLog(gpuJobView{UnitName: saved.UnitName, Host: host, Error: gpuLogCleanupPrefix + err.Error()})
+			return
+		}
+		if err := h.DB.ClearGPUJobLogError(saved.UnitName); err != nil {
+			return
+		}
+		job.Error = ""
+
+		h.destroyManagedGPUAfterTerminalJob(ctx, job)
+		return
+	}
 }
 
 func renderTerminalGPUJob(unit, status string) gpuJobView {
@@ -533,7 +610,7 @@ func (h *Handler) monitorRenderJob(id int64, unit, host string) {
 			if stopErr != nil {
 				message += "; stopping remote job failed: " + strings.TrimSpace(fmt.Sprintf("%v: %s", stopErr, out))
 			}
-			finished := h.finishRenderAttemptWithLogs(cleanupCtx, host, id, unit, "failed", message)
+			finished := h.finishRenderAttempt(cleanupCtx, host, id, unit, "failed", message)
 			cleanupCancel()
 			if !finished {
 				return
@@ -549,7 +626,7 @@ func (h *Handler) monitorRenderJob(id int64, unit, host string) {
 				if status != "finished" {
 					message = "conf-render exited with status " + exitCode
 				}
-				if !h.finishRenderAttemptWithLogs(ctx, host, id, unit, status, message) {
+				if !h.finishRenderAttempt(ctx, host, id, unit, status, message) {
 					continue
 				}
 				go h.dispatchGPUQueueOnce(context.Background())
@@ -563,7 +640,7 @@ func (h *Handler) monitorRenderJob(id int64, unit, host string) {
 			if job.ActiveState == "failed" || (job.Result != "" && job.Result != "success") {
 				status = "failed"
 			}
-			if !h.finishRenderAttemptWithLogs(ctx, host, id, unit, status, "") {
+			if !h.finishRenderAttempt(ctx, host, id, unit, status, "") {
 				continue
 			}
 			go h.dispatchGPUQueueOnce(context.Background())

@@ -133,6 +133,9 @@ func TestRenderWorkerScriptRoundTrip(t *testing.T) {
 	rclone := `#!/usr/bin/env bash
 set -euo pipefail
 command="$1"
+shift
+while [ "${1:-}" = --contimeout ] || [ "${1:-}" = --timeout ]; do shift 2; done
+set -- "$command" "$@"
 src="${@: -2:1}"
 dst="${@: -1}"
 local_path() { case "$1" in spaces:test/*) printf '%s/%s' "$REMOTE_ROOT" "${1#spaces:test/}" ;; *) printf '%s' "$1" ;; esac; }
@@ -150,6 +153,7 @@ esac
 set -euo pipefail
 if [ "$1" = validate ]; then exit 0; fi
 if [ "$1" != render ]; then exit 2; fi
+[ "${HF_HUB_OFFLINE:-}" = 1 ] || exit 3
 shift
 output=""
 while [ $# -gt 0 ]; do
@@ -160,7 +164,7 @@ printf 'rendered' > "$output/intro.mp4"
 printf 'readable subtitles' > "$output/intro.subs.srt"
 printf 'word subtitles' > "$output/intro.words.srt"
 `
-	for name, body := range map[string]string{"rclone": rclone, "conf-render": confRender} {
+	for name, body := range map[string]string{"rclone": rclone, "conf-render": confRender, "python": "#!/bin/sh\nprintf 'model ready\\n'\n"} {
 		if err := os.WriteFile(filepath.Join(binDir, name), []byte(body), 0755); err != nil {
 			t.Fatal(err)
 		}

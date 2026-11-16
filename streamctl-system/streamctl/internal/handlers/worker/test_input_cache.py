@@ -156,7 +156,7 @@ class PublicationTests(unittest.TestCase):
             marker = output / "ready.json"
             video = output / "talk.mp4"
             video.write_bytes(b"keep video")
-            with patch.dict(os.environ, {"RCLONE_CONFIG": os.devnull}):
+            with patch.dict(os.environ, {"RCLONE_CONFIG": os.devnull, "RCLONE_FILTER_FROM": os.devnull}):
                 worker.invalidate_ready_marker(str(root), prefix)
                 marker.write_text("old marker")
                 worker.invalidate_ready_marker(str(root), prefix)

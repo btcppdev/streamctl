@@ -192,8 +192,13 @@ func (h *Handler) reconcileProxyJobs(ctx context.Context) {
 		if err := h.DB.UpdateProductionProxyAttempt(job, status.State, stage, progress, status.DurationMS, status.Error); err != nil {
 			continue
 		}
-		_, _ = remoteSSH(ctx, job.WorkerHost, "rm -rf -- "+shellQuote(proxyWorkspace(job)))
-		h.destroyManagedGPUAfterTerminalJob(ctx, renderTerminalGPUJob(job.WorkerUnit, status.State))
+		archive := renderTerminalGPUJob(job.WorkerUnit, status.State)
+		archive.Host, archive.RawPath = job.WorkerHost, job.Source
+		archive.Error = gpuLogPendingPrefix + "waiting for worker output"
+		if err := h.saveGPUJobLog(archive); err != nil {
+			log.Printf("recording preview archive: %v", err)
+		}
+
 	}
 }
 

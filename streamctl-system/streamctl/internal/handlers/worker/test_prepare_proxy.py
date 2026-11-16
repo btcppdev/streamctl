@@ -114,7 +114,7 @@ class PreviewTests(unittest.TestCase):
 
             with patch.object(proxy, "encode_args", side_effect=encode), \
                  patch.object(proxy.subprocess, "check_output", side_effect=check_output), \
-                 patch.dict(os.environ, {"RCLONE_CONFIG": os.devnull}):
+                 patch.dict(os.environ, {"RCLONE_CONFIG": os.devnull, "RCLONE_FILTER_FROM": os.devnull}):
                 proxy.prepare(request, job)
                 # Retrying must also replace an existing ready marker cleanly.
                 proxy.prepare(request, job)
