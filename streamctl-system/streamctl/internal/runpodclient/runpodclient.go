@@ -7,12 +7,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 )
 
-const apiBase = "https://rest.runpod.io/v1"
+const apiBase = "https://api.runpod.io/v2"
 
 type Client struct {
 	Token string
@@ -20,17 +21,37 @@ type Client struct {
 }
 
 type Pod struct {
-	ID            string         `json:"id"`
-	Name          string         `json:"name"`
-	DesiredStatus string         `json:"desiredStatus"`
-	Runtime       Runtime        `json:"runtime"`
-	PortMappings  map[string]any `json:"portMappings"`
-	PublicIP      string         `json:"publicIp"`
-	CostPerHr     float64        `json:"costPerHr"`
-	MachineID     string         `json:"machineId"`
-	GPUTypeID     string         `json:"gpuTypeId"`
-	ImageName     string         `json:"imageName"`
-	CreatedAt     string         `json:"createdAt"`
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	State     string    `json:"status"`
+	Runtime   Runtime   `json:"runtime"`
+	CostPerHr float64   `json:"cost"`
+	GPU       GPUConfig `json:"gpu"`
+	ImageName string    `json:"image"`
+	CreatedAt string    `json:"createdAt"`
+	SSH       struct {
+		Direct *SSHEndpoint `json:"direct"`
+	} `json:"ssh"`
+}
+
+type SSHEndpoint struct {
+	Host     string `json:"host"`
+	Port     int    `json:"port"`
+	Username string `json:"username"`
+}
+
+type GPUConfig struct {
+	ID    string `json:"id"`
+	Count int    `json:"count"`
+}
+
+type PersistentMount struct {
+	Size int    `json:"size"`
+	Path string `json:"path"`
+}
+
+type Mounts struct {
+	Persistent *PersistentMount `json:"persistent,omitempty"`
 }
 
 type Runtime struct {
@@ -39,22 +60,21 @@ type Runtime struct {
 
 type RuntimePort struct {
 	IP          string `json:"ip"`
-	PrivatePort int    `json:"privatePort"`
-	PublicPort  int    `json:"publicPort"`
+	PrivatePort int    `json:"private"`
+	PublicPort  int    `json:"public"`
 	Type        string `json:"type"`
 }
 
 type CreatePodRequest struct {
 	Name              string            `json:"name"`
-	ImageName         string            `json:"imageName"`
-	GPUTypeIDs        []string          `json:"gpuTypeIds"`
-	GPUCount          int               `json:"gpuCount"`
-	CloudType         string            `json:"cloudType,omitempty"`
-	ContainerDiskInGB int               `json:"containerDiskInGb,omitempty"`
-	VolumeInGB        int               `json:"volumeInGb,omitempty"`
+	ImageName         string            `json:"image"`
+	GPU               GPUConfig         `json:"gpu"`
+	CloudType         string            `json:"cloud,omitempty"`
+	ContainerDiskInGB int               `json:"disk,omitempty"`
+	Mounts            Mounts            `json:"mounts"`
 	Ports             []string          `json:"ports,omitempty"`
 	Env               map[string]string `json:"env,omitempty"`
-	DockerStartCmd    []string          `json:"dockerStartCmd,omitempty"`
+	DockerStartCmd    []string          `json:"cmd,omitempty"`
 }
 
 func New(token string) *Client {
@@ -66,16 +86,45 @@ func New(token string) *Client {
 
 func (c *Client) ListPods(ctx context.Context) ([]Pod, error) {
 	var pods []Pod
-	if err := c.request(ctx, http.MethodGet, "/pods", nil, &pods); err != nil {
-		var resp struct {
-			Pods []Pod `json:"pods"`
+	cursor := ""
+	seen := map[string]bool{}
+	for {
+		var page struct {
+			Pods       []Pod `json:"pods"`
+			Pagination struct {
+				NextCursor  string `json:"nextCursor"`
+				HasNextPage bool   `json:"hasNextPage"`
+			} `json:"pagination"`
 		}
-		if err2 := c.request(ctx, http.MethodGet, "/pods", nil, &resp); err2 != nil {
+		path := "/pods?limit=20"
+		if cursor != "" {
+			path += "&cursor=" + url.QueryEscape(cursor)
+		}
+		if err := c.request(ctx, http.MethodGet, path, nil, &page); err != nil {
 			return nil, err
 		}
-		return resp.Pods, nil
+		pods = append(pods, page.Pods...)
+		if !page.Pagination.HasNextPage {
+			return pods, nil
+		}
+		cursor = page.Pagination.NextCursor
+		if cursor == "" || seen[cursor] {
+			return nil, fmt.Errorf("RunPod returned an invalid/repeated pagination cursor")
+		}
+		seen[cursor] = true
 	}
-	return pods, nil
+}
+
+// List responses omit live direct-SSH mappings; resolve the selected pod only.
+func (c *Client) GetPod(ctx context.Context, id string) (*Pod, error) {
+	var pod Pod
+	if err := c.request(ctx, http.MethodGet, "/pods/"+url.PathEscape(id), nil, &pod); err != nil {
+		return nil, err
+	}
+	if pod.ID != id {
+		return nil, fmt.Errorf("RunPod returned an unexpected pod ID")
+	}
+	return &pod, nil
 }
 
 func (c *Client) CreatePod(ctx context.Context, req CreatePodRequest) (*Pod, error) {
@@ -103,7 +152,7 @@ func (c *Client) CreatePod(ctx context.Context, req CreatePodRequest) (*Pod, err
 }
 
 func (c *Client) DeletePod(ctx context.Context, id string) error {
-	return c.request(ctx, http.MethodDelete, "/pods/"+id, nil, nil)
+	return c.request(ctx, http.MethodDelete, "/pods/"+url.PathEscape(id), nil, nil)
 }
 
 func (c *Client) request(ctx context.Context, method, path string, body any, out any) error {
@@ -126,7 +175,15 @@ func (c *Client) request(ctx context.Context, method, path string, body any, out
 		return err
 	}
 	defer resp.Body.Close()
-	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	// List entries include container configuration, including embedded setup
+	// scripts. Keep a bound while allowing a complete 20-item page.
+	data, err := io.ReadAll(io.LimitReader(resp.Body, (8<<20)+1))
+	if err != nil {
+		return err
+	}
+	if len(data) > 8<<20 {
+		return fmt.Errorf("RunPod response exceeded 8 MiB")
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("%s %s: %s: %s", method, path, resp.Status, strings.TrimSpace(string(data)))
 	}
@@ -137,7 +194,7 @@ func (c *Client) request(ctx context.Context, method, path string, body any, out
 }
 
 func (p Pod) Status() string {
-	status := strings.ToLower(p.DesiredStatus)
+	status := strings.ToLower(p.State)
 	switch status {
 	case "running", "running_secure", "running_community":
 		return "active"
@@ -162,41 +219,13 @@ func (p Pod) SSHHost(user string) string {
 }
 
 func (p Pod) SSHAddress() (string, int) {
+	if direct := p.SSH.Direct; direct != nil && direct.Host != "" && direct.Port > 0 {
+		return direct.Host, direct.Port
+	}
 	for _, port := range p.Runtime.Ports {
 		if port.PrivatePort == 22 && port.PublicPort > 0 {
-			return firstNonEmpty(port.IP, p.PublicIP), port.PublicPort
-		}
-	}
-	for key, value := range p.PortMappings {
-		if key != "22" && key != "22/tcp" {
-			continue
-		}
-		switch v := value.(type) {
-		case float64:
-			return p.PublicIP, int(v)
-		case string:
-			port, _ := strconv.Atoi(v)
-			return p.PublicIP, port
-		case map[string]any:
-			ip, _ := v["ip"].(string)
-			publicPort := 0
-			switch pv := v["publicPort"].(type) {
-			case float64:
-				publicPort = int(pv)
-			case string:
-				publicPort, _ = strconv.Atoi(pv)
-			}
-			return firstNonEmpty(ip, p.PublicIP), publicPort
+			return port.IP, port.PublicPort
 		}
 	}
 	return "", 0
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if value != "" {
-			return value
-		}
-	}
-	return ""
 }

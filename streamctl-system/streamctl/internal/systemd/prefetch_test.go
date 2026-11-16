@@ -50,6 +50,18 @@ func TestPrefetchDeduplicatesDownloadsAndChecksWholePlaylist(t *testing.T) {
 // A failed download or readiness check must stop prefetch rather than silently
 // accepting old bytes or starting a conversion fallback.
 func TestPrefetchPropagatesDownloadAndReadinessFailures(t *testing.T) {
+	if _, err := exec.LookPath("flock"); err != nil {
+		python, err := exec.LookPath("python3")
+		if err != nil {
+			t.Fatal("python3 is required for the macOS flock adapter")
+		}
+		bin := t.TempDir()
+		adapter := "#!" + python + "\nimport fcntl,sys\nfcntl.flock(int(sys.argv[-1]), fcntl.LOCK_SH)\n"
+		if err := os.WriteFile(filepath.Join(bin, "flock"), []byte(adapter), 0700); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	}
 	for _, which := range []string{"download", "readiness"} {
 		t.Run(which, func(t *testing.T) {
 			dir := t.TempDir()
@@ -78,6 +90,78 @@ func TestPrefetchPropagatesDownloadAndReadinessFailures(t *testing.T) {
 			exit, ok := err.(*exec.ExitError)
 			if !ok || exit.ExitCode() != want {
 				t.Fatalf("%s: want exit %d, got %v: %s", which, want, err, out)
+			}
+		})
+	}
+}
+
+func TestMediaScriptsLockAgainstCleanup(t *testing.T) {
+	m := &Manager{CacheDir: "/cache", HLSDir: "/hls", Remote: "spaces:test", CleanupCache: true}
+	s := &db.Stream{ID: 1, Videos: []string{"conference/shared.mp4"}}
+	for _, script := range []string{m.renderRunScript(s), m.renderPrefetchScript(s)} {
+		lock := strings.Index(script, "exec 9>>'/cache/.cleanup.lock'")
+		shared := strings.Index(script, "flock --shared 9")
+		if lock < 0 || shared < lock {
+			t.Fatalf("media operation does not hold cleanup lock:\n%s", script)
+		}
+	}
+	if strings.Contains(m.renderRunScript(s), "rm -f -- '/cache/conference/shared.mp4'") {
+		t.Fatal("stream completion must not delete another stream's shared media")
+	}
+}
+
+func TestSyncOnlyPrefetchesStreamsWithUpcomingTimers(t *testing.T) {
+	for _, tt := range []struct {
+		name, scheduleType, next, showExit string
+		wantPrefetch                       bool
+	}{
+		{"expired one-time stream", "once", "", "0", false},
+		{"unavailable trigger", "once", "n/a", "0", false},
+		{"timer query failure", "once", "", "1", false},
+		{"upcoming one-time stream", "once", "Fri 2099-01-02 10:00:00 UTC", "0", true},
+		{"recurring stream", "recurring", "Fri 2099-01-02 10:00:00 UTC", "0", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			calls := filepath.Join(dir, "calls")
+			fakeSystemctl := `#!/bin/sh
+printf '%s\n' "$*" >> "$TEST_SYSTEMCTL_CALLS"
+if [ "$1" = show ]; then
+  [ "$*" = "show streamctl-stream-42.timer --property=NextElapseUSecRealtime --value" ] || exit 2
+  printf '%s\n' "$TEST_NEXT_TRIGGER"
+  exit "$TEST_SHOW_EXIT"
+fi
+`
+			if err := os.WriteFile(filepath.Join(dir, "systemctl"), []byte(fakeSystemctl), 0700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			t.Setenv("TEST_SYSTEMCTL_CALLS", calls)
+			t.Setenv("TEST_NEXT_TRIGGER", tt.next)
+			t.Setenv("TEST_SHOW_EXIT", tt.showExit)
+			m := &Manager{UnitDir: dir, UnitPrefix: "streamctl-", CacheDir: "/cache", Remote: "spaces:btcpp"}
+			s := &db.Stream{ID: 42, Name: "A stream", Enabled: true, ScheduleType: tt.scheduleType,
+				OnCalendar: "2099-01-02 10:00:00 UTC", Videos: []string{"e/recordings/output.mp4"}}
+			if err := m.Sync(s); err != nil {
+				t.Fatal(err)
+			}
+			log, err := os.ReadFile(calls)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.Contains(string(log), "start --no-block streamctl-prefetch-42.service\n"); got != tt.wantPrefetch {
+				t.Fatalf("prefetch = %v, want %v; commands:\n%s", got, tt.wantPrefetch, log)
+			}
+			// Manual playback must still download its media, even after expiry.
+			service, err := os.ReadFile(filepath.Join(dir, "streamctl-stream-42.service"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(service), "Requires=streamctl-prefetch-42.service\n") {
+				t.Fatal("stream service lost its prefetch dependency")
+			}
+			if err := m.StartNow(s.ID); err != nil {
+				t.Fatal(err)
 			}
 		})
 	}

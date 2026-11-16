@@ -37,9 +37,9 @@ func TestConcurrentWorkerCreationReconcilesLostResponse(t *testing.T) {
 			posts++
 			return nil, errors.New("response lost after creation")
 		}
-		body := "[]"
+		body := `{"pods":[]}`
 		if created {
-			body = `[{"id":"existing","name":"test-worker"}]`
+			body = `{"pods":[{"id":"existing","name":"test-worker"}]}`
 		}
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
 	})

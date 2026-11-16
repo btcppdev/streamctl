@@ -64,7 +64,7 @@ func main() {
 		rcloneCfg           = flag.String("rclone-config", "", "path to rclone config file for generated prefetch services")
 		notifyEmail         = flag.String("notify-email", "", "email address for prefetch success/failure notifications")
 		sendmailPath        = flag.String("sendmail", "/run/current-system/sw/bin/sendmail", "sendmail-compatible binary for notifications")
-		cleanupCache        = flag.Bool("cleanup-cache", true, "delete cached remote files after successful streaming")
+		cleanupCache        = flag.Bool("cleanup-cache", true, "enable cache cleanup integration (periodic cleanup is managed by NixOS)")
 		nostrKeyDir         = flag.String("nostr-key-dir", "/var/lib/streamctl/nostr-keys", "directory for stored Nostr private keys")
 		publicBaseURL       = flag.String("public-base-url", "", "public base URL used in Nostr live events, e.g. https://stream.example.com")
 		btcppOAuthBase      = flag.String("btcpp-oauth-base", "https://btcpp.dev", "bitcoin++ OAuth server base URL")
@@ -93,6 +93,7 @@ func main() {
 		gpuSSHKeyName       = flag.String("gpu-ssh-key-name", "streamctl-deploy", "DigitalOcean SSH key name to install on managed GPU Droplets")
 		gpuWorkerUser       = flag.String("gpu-worker-user", "root", "SSH user for managed GPU Droplets")
 		gpuDestroyAfterJob  = flag.Bool("gpu-destroy-after-job", false, "destroy managed GPU worker after a successful GPU job")
+		gpuPreserveWorker   = flag.Bool("gpu-preserve-worker", false, "diagnostic mode: disable automatic worker destruction and retain failed render workspaces")
 		unitDir             = flag.String("unit-dir", "/etc/systemd/system", "directory for generated systemd units")
 		unitPrefix          = flag.String("unit-prefix", "streamctl-", "prefix for generated systemd unit names")
 		runUser             = flag.String("run-user", "streamctl", "user to run streams as")
@@ -210,6 +211,7 @@ func main() {
 		GPUSSHKeyName:       strings.TrimSpace(*gpuSSHKeyName),
 		GPUWorkerUser:       strings.TrimSpace(*gpuWorkerUser),
 		GPUDestroyAfterJob:  *gpuDestroyAfterJob,
+		GPUPreserveWorker:   *gpuPreserveWorker,
 		Systemd:             sysd,
 		OAuth:               oauthClient,
 		BTCPPBaseURL:        strings.TrimRight(strings.TrimSpace(*btcppAPIBase), "/"),

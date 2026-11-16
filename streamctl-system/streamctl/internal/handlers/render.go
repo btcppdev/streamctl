@@ -526,7 +526,9 @@ func (h *Handler) retryPendingGPUJobLogs(ctx context.Context) {
 			// The workspace is keyed by attempt, so retries cannot remove a newer one.
 			cleanup = "rm -rf -- " + shellQuote(proxyWorkspace(db.ProductionProxyJob{WorkerUnit: saved.UnitName}))
 		}
-		if _, err := remoteSSH(ctx, host, cleanup); err != nil {
+		if render && h.GPUPreserveWorker && saved.ActiveState == "failed" {
+			log.Printf("preserving failed render %s workspace and worker for diagnosis", saved.UnitName)
+		} else if _, err := remoteSSH(ctx, host, cleanup); err != nil {
 			_ = h.saveGPUJobLog(gpuJobView{UnitName: saved.UnitName, Host: host, Error: gpuLogCleanupPrefix + err.Error()})
 			return
 		}
@@ -632,7 +634,16 @@ func (h *Handler) monitorRenderJob(id int64, unit, host string) {
 				go h.dispatchGPUQueueOnce(context.Background())
 				return
 			}
-			job := h.gpuJob(ctx, host, unit, false)
+			// Checkpoint diagnostics on the controller while the worker is alive.
+			// A container/host failure must not erase the only resource history.
+			logCtx, logCancel := context.WithTimeout(ctx, 20*time.Second)
+			job := h.gpuJob(logCtx, host, unit, true)
+			logCancel()
+			if job.Error == "" && strings.TrimSpace(job.Journal) != "" {
+				if err := h.saveGPUJobLog(job); err != nil {
+					log.Printf("checkpointing render %s logs failed: %v", unit, err)
+				}
+			}
 			if !isTerminalGPUJob(job) {
 				continue
 			}

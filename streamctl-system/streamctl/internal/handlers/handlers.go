@@ -76,6 +76,7 @@ type Handler struct {
 	GPUSSHKeyName       string
 	GPUWorkerUser       string
 	GPUDestroyAfterJob  bool
+	GPUPreserveWorker   bool
 	Systemd             *systemd.Manager
 	OAuth               *btcppoauth.Client
 	BTCPP               productionCandidatesClient
@@ -374,8 +375,7 @@ func (h *Handler) streamDelete(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	s, err := h.DB.GetStream(id)
-	if err != nil {
+	if _, err := h.DB.GetStream(id); err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
@@ -383,10 +383,8 @@ func (h *Handler) streamDelete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if err := h.Systemd.RemoveCachedClips(s); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+	// The periodic cleaner removes unreferenced files without deleting media
+	// still used by another stream.
 	if err := h.DB.DeleteStream(id); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -978,7 +976,8 @@ func (h *Handler) gpuJobLogs(w http.ResponseWriter, r *http.Request) {
 	var host string
 	var err error
 	savedArchive, archiveErr := h.DB.GetGPUJobLog(unit)
-	completeArchive := archiveErr == nil && isTerminalGPUJob(gpuJobViewFromDB(*savedArchive)) && strings.TrimSpace(savedArchive.Journal) != "" && (!strings.HasPrefix(savedArchive.Error, gpuLogPendingPrefix) || strings.HasPrefix(savedArchive.Error, gpuLogCleanupPrefix))
+	// Saved terminal state can identify an archive, but cannot drive live scheduling.
+	completeArchive := archiveErr == nil && (savedArchive.ActiveState == "inactive" || savedArchive.ActiveState == "failed") && strings.TrimSpace(savedArchive.Journal) != "" && (!strings.HasPrefix(savedArchive.Error, gpuLogPendingPrefix) || strings.HasPrefix(savedArchive.Error, gpuLogCleanupPrefix))
 	if completeArchive {
 		host = savedArchive.Host
 	} else {
@@ -1256,6 +1255,7 @@ func (h *Handler) saveGPUJobLog(job gpuJobView) error {
 
 func gpuJobViewFromDB(job db.GPUJobLog) gpuJobView {
 	return gpuJobView{
+		Cached:      true,
 		UnitName:    job.UnitName,
 		RawPath:     job.RawPath,
 		Host:        job.Host,
@@ -1270,7 +1270,7 @@ func gpuJobViewFromDB(job db.GPUJobLog) gpuJobView {
 }
 
 func isTerminalGPUJob(job gpuJobView) bool {
-	return job.ActiveState == "inactive" || job.ActiveState == "failed"
+	return !job.Cached && (job.ActiveState == "inactive" || job.ActiveState == "failed")
 }
 
 func isBlockingGPUJob(job gpuJobView) bool {
@@ -1322,6 +1322,9 @@ func (h *Handler) dispatchGPUQueueOnce(ctx context.Context) {
 		return
 	}
 	worker := h.gpuWorkerView(ctx)
+	if worker.Error != "" {
+		log.Printf("GPU queue waiting for worker: %s", worker.Error)
+	}
 	if worker.Managed && worker.Status != "active" {
 		h.reconcileUnavailableRenderQueue(worker)
 		h.reconcileUnavailableProxyQueue(worker)
@@ -1386,6 +1389,9 @@ func gpuFailureJournalSummary(journal string) string {
 }
 
 func (h *Handler) destroyManagedGPUAfterTerminalJob(ctx context.Context, job gpuJobView) {
+	if h.GPUPreserveWorker {
+		return
+	}
 	if strings.TrimSpace(h.DOTokenFile) == "" && !h.hasRunPodToken() {
 		return
 	}
@@ -1862,14 +1868,19 @@ func (h *Handler) runpodWorkerView(ctx context.Context, view gpuWorkerView) gpuW
 		if pod.Name != h.runpodPodName() {
 			continue
 		}
+		current, err := client.GetPod(ctx, pod.ID)
+		if err != nil {
+			view.Status, view.Error = "api error", err.Error()
+			return view
+		}
+		pod = *current
 		view.ID = 1
 		view.ExternalID = pod.ID
 		view.Name = pod.Name
 		view.RawStatus = pod.Status()
 		view.Status = view.RawStatus
 		view.CostHourly = pod.CostPerHr
-		view.MachineID = pod.MachineID
-		view.GPUType = firstNonEmptyString(pod.GPUTypeID, view.GPUType)
+		view.GPUType = firstNonEmptyString(pod.GPU.ID, view.GPUType)
 		view.Image = firstNonEmptyString(pod.ImageName, view.Image)
 		view.CreatedAt = pod.CreatedAt
 		view.SSHHost = pod.SSHHost(firstNonEmptyString(h.GPUWorkerUser, "root"))
@@ -1949,11 +1960,10 @@ func (h *Handler) ensureRunPodWorker(ctx context.Context, gpuType string) error 
 	if _, err := client.CreatePod(ctx, runpodclient.CreatePodRequest{
 		Name:              h.runpodPodName(),
 		ImageName:         firstNonEmptyString(h.RunPodImage, "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04"),
-		GPUTypeIDs:        []string{gpuType},
-		GPUCount:          1,
+		GPU:               runpodclient.GPUConfig{ID: gpuType, Count: 1},
 		CloudType:         firstNonEmptyString(h.RunPodCloudType, "SECURE"),
 		ContainerDiskInGB: 80,
-		VolumeInGB:        80,
+		Mounts:            runpodclient.Mounts{Persistent: &runpodclient.PersistentMount{Size: 80, Path: "/workspace"}},
 		Ports:             []string{"22/tcp"},
 		Env:               env,
 		DockerStartCmd: []string{"bash", "-lc", boundedWorkerSetup(strings.Join([]string{

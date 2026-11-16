@@ -203,7 +203,7 @@ class PublicationTests(unittest.TestCase):
                         self.fail(f"unexpected command {args}")
                     return ""
 
-                with patch.object(worker, "run", side_effect=command), patch.object(worker, "prepare_inputs"), patch.object(worker.sys, "argv", ["worker", str(manifest), str(output), str(work)]), patch.dict(os.environ, {"SPACES_REMOTE": "spaces:bucket", "STREAMCTL_RENDER_QUEUE_ID": "42"}):
+                with patch.object(worker, "run", side_effect=command), patch.object(worker, "run_render", side_effect=lambda args, work, **kwargs: command(*args, **kwargs)), patch.object(worker, "prepare_inputs"), patch.object(worker.sys, "argv", ["worker", str(manifest), str(output), str(work)]), patch.dict(os.environ, {"SPACES_REMOTE": "spaces:bucket", "STREAMCTL_RENDER_QUEUE_ID": "42"}):
                     if fail_upload:
                         with self.assertRaises(subprocess.CalledProcessError):
                             worker.main()

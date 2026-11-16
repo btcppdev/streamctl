@@ -73,6 +73,8 @@
     digitalOceanTokenFile = "/var/lib/streamctl/digitalocean-token";
     runpodTokenFile = "/var/lib/streamctl/runpod-token";
     gpuDestroyAfterJob = true;
+    # Keep this diagnostic retry inspectable; disable after the render is resolved.
+    gpuPreserveWorker = true;
     # videoDir defaults to /var/lib/streamctl/videos — that's where you scp event files.
     # cacheDir defaults to /var/lib/streamctl/cache — remote clips are prefetched there.
   };
@@ -132,9 +134,14 @@
 
   nix.gc = {
     automatic = true;
-    dates = "weekly";
+    dates = "daily";
     options = "--delete-older-than 14d";
   };
+
+  services.journald.extraConfig = ''
+    SystemMaxUse=512M
+    SystemKeepFree=2G
+  '';
 
   # NixOS state version. Don't bump this casually — read the manual if you
   # want to upgrade. It's a marker for the schema of stateful directories,

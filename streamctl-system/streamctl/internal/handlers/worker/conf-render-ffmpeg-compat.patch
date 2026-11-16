@@ -1,12 +1,298 @@
 diff --git a/src/conf_render/ffmpeg.py b/src/conf_render/ffmpeg.py
 --- a/src/conf_render/ffmpeg.py
 +++ b/src/conf_render/ffmpeg.py
-@@ -236,7 +236,7 @@
+@@ -3,6 +3,7 @@
+ from __future__ import annotations
+
+ import json
++import os
+ import platform
+ import re
+ import shlex
+@@ -132,9 +133,13 @@
+         raise RuntimeError(f"rendered output failed verification ({', '.join(missing)}): {info.path}")
+
+
+-def _write_concat_file(chunks: tuple[Path, ...], path: Path) -> None:
+-    """Write an FFconcat list using shell-style quoting accepted by FFmpeg."""
+-    lines = ["ffconcat version 1.0", *(f"file {shlex.quote(str(chunk))}" for chunk in chunks)]
++def _write_concat_file(chunks: tuple[Path, ...], path: Path, durations_ms: tuple[int, ...]) -> None:
++    """Write a seekable FFconcat list using durations already collected by probing."""
++    if len(durations_ms) != len(chunks) or any(value <= 0 for value in durations_ms):
++        raise ValueError("all chunk durations must be known before rendering")
++    lines = ["ffconcat version 1.0"]
++    for chunk, duration_ms in zip(chunks, durations_ms):
++        lines.extend([f"file {shlex.quote(str(chunk))}", f"duration {ffmpeg_seconds(duration_ms)}"])
+     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+@@ -231,7 +236,7 @@
          f"[{audio_label}]afade=t=in:st=0:d={ffmpeg_seconds(fade_ms)},"
          f"afade=t=out:st={ffmpeg_seconds(fade_out_ms)}:d={ffmpeg_seconds(fade_ms)}[aout]"
      )
 -    return ";\n".join(filters) + ";\n"
 +    return ";\n".join(filters)
- 
- 
+
+
  def build_command(
+@@ -241,8 +246,14 @@
+     concat_files: dict[int, Path] | None = None,
+ ) -> list[str]:
+     """Construct the final FFmpeg command for a resolved plan."""
+-    command = ["ffmpeg", "-y" if overwrite else "-n", "-hide_banner"]
++    input_threads = int(os.environ.get("STREAMCTL_RENDER_INPUT_THREADS", "2"))
++    filter_threads = int(os.environ.get("STREAMCTL_RENDER_FILTER_THREADS", "4"))
++    if not 1 <= input_threads <= 64 or not 1 <= filter_threads <= 64:
++        raise ValueError("render input/filter threads must be between 1 and 64")
++    command = ["ffmpeg", "-y" if overwrite else "-n", "-hide_banner",
++               "-filter_threads", str(filter_threads), "-filter_complex_threads", str(filter_threads)]
+     for segment in plan.segments:
++        command.extend(["-threads", str(input_threads)])
+         if segment.type == "image":
+             command.extend([
+                 "-loop", "1", "-framerate", str(plan.fps),
+@@ -258,11 +269,13 @@
+                 command.extend(["-i", str(segment.src)])
+         if segment.overlay is not None:
+             command.extend([
++                "-threads", str(input_threads),
+                 "-loop", "1", "-framerate", str(plan.fps),
+                 "-t", ffmpeg_seconds(segment.duration_ms), "-i", str(segment.overlay),
+             ])
+         if segment.audio is not None:
+             command.extend([
++                "-threads", str(input_threads),
+                 "-ss", ffmpeg_seconds(segment.audio.source_in_ms),
+                 "-t", ffmpeg_seconds(segment.duration_ms), "-i", str(segment.audio.src),
+             ])
+@@ -272,6 +285,7 @@
+     ])
+     command.extend(_video_encoder_args(plan))
+     command.extend([
++        "-threads", str(input_threads),
+         *_normalized_output_args(plan),
+         "-c:a", "aac", "-b:a", plan.audio_bitrate, "-ar", str(plan.audio_sample_rate), "-ac", "2",
+         "-movflags", "+faststart", str(output),
+@@ -289,7 +303,7 @@
+     for segment in plan.segments:
+         if segment.chunks:
+             concat_file = work_dir / f"segment-{segment.index:03d}.ffconcat"
+-            _write_concat_file(segment.chunks, concat_file)
++            _write_concat_file(segment.chunks, concat_file, segment.chunk_durations_ms)
+             concat_files[segment.index] = concat_file
+     filter_script.write_text(build_filter_graph(plan), encoding="utf-8")
+     plan_file.write_text(json.dumps(plan.to_dict(), indent=2) + "\n", encoding="utf-8")
+diff --git a/src/conf_render/probe.py b/src/conf_render/probe.py
+--- a/src/conf_render/probe.py
++++ b/src/conf_render/probe.py
+@@ -30,6 +30,7 @@
+     audio_codec: str | None = None
+     audio_sample_rate: str | None = None
+     audio_channels: int | None = None
++    chunk_durations_ms: tuple[int, ...] = ()
+
+     def to_dict(self) -> dict[str, object]:
+         value = asdict(self)
+@@ -138,6 +139,7 @@
+         height=reference.height,
+         frame_rate=reference.frame_rate,
+         chunks=chunks,
++        chunk_durations_ms=tuple(info.duration_ms for info in infos),
+         video_codec=reference.video_codec,
+         video_profile=reference.video_profile,
+         pixel_format=reference.pixel_format,
+diff --git a/src/conf_render/timeline.py b/src/conf_render/timeline.py
+--- a/src/conf_render/timeline.py
++++ b/src/conf_render/timeline.py
+@@ -38,6 +38,7 @@
+     chunks: tuple[Path, ...] = ()
+     overlay: Path | None = None
+     audio: PlannedAudio | None = None
++    chunk_durations_ms: tuple[int, ...] = ()
+
+     def to_dict(self) -> dict[str, object]:
+         data = asdict(self)
+@@ -135,6 +136,7 @@
+             has_audio=has_audio,
+             transcribe=transcribe,
+             chunks=info.chunks,
++            chunk_durations_ms=info.chunk_durations_ms,
+             overlay=segment.overlay,
+             audio=planned_audio,
+         ))
+diff --git a/src/conf_render/progress.py b/src/conf_render/progress.py
+--- a/src/conf_render/progress.py
++++ b/src/conf_render/progress.py
+@@ -3,9 +3,11 @@
+ from __future__ import annotations
+
+ import subprocess
++import os
+ import sys
+ import tempfile
+ import threading
++import time
+ from collections.abc import Callable
+ from datetime import datetime
+ from typing import TextIO
+@@ -65,8 +67,15 @@
+ ) -> None:
+     """Execute FFmpeg and report percentages from its machine-readable output."""
+     progress_command = command[:1] + ["-progress", "pipe:1", "-nostats"] + command[1:]
++    diagnostics = os.environ.get("STREAMCTL_RENDER_DIAGNOSTICS_DIR") or None
++    if diagnostics:
++        os.makedirs(diagnostics, exist_ok=True)
+     try:
+-        with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as error_log:
++        with tempfile.NamedTemporaryFile(mode="w+t", encoding="utf-8", prefix="ffmpeg-",
++                                         suffix=".stderr.log", dir=diagnostics,
++                                         delete=diagnostics is None) as error_log:
++            if diagnostics:
++                report(f"FFmpeg stderr: {error_log.name}")
+             process = subprocess.Popen(
+                 progress_command,
+                 stdout=subprocess.PIPE,
+@@ -75,8 +84,15 @@
+             )
+             assert process.stdout is not None
+             last_percent = -1
++            last_metrics = time.monotonic()
++            metrics: dict[str, str] = {}
+             for raw_line in process.stdout:
+                 key, separator, value = raw_line.strip().partition("=")
++                if separator and key in {"out_time", "speed", "fps", "frame"}:
++                    metrics[key] = value
++                if key == "progress" and (time.monotonic() - last_metrics >= 30 or value == "end"):
++                    report("Rendering metrics: " + " ".join(f"{name}={value}" for name, value in metrics.items()))
++                    last_metrics = time.monotonic()
+                 if not separator or key not in {"out_time_us", "out_time_ms"}:
+                     continue
+                 try:
+@@ -94,6 +110,7 @@
+     except FileNotFoundError as exc:
+         raise FFmpegError("ffmpeg was not found on PATH") from exc
+     if return_code:
++        report("Full FFmpeg stderr follows:\n" + stderr)
+         lines = [line for line in stderr.strip().splitlines() if line]
+         detail = lines[-1] if lines else "unknown FFmpeg error"
+         raise FFmpegError(f"ffmpeg failed (exit {return_code}): {detail}")
+diff --git a/tests/test_probe.py b/tests/test_probe.py
+--- a/tests/test_probe.py
++++ b/tests/test_probe.py
+@@ -36,3 +36,4 @@
+     info = probe_chunked_media(paths[0], paths, probe=fake_probe)
+     assert info.duration_ms == 1_200_000
+     assert info.chunks == paths
++    assert info.chunk_durations_ms == (600_000, 600_000)
+diff --git a/tests/test_concat_seek.py b/tests/test_concat_seek.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_concat_seek.py
+@@ -0,0 +1,54 @@
++"""Regressions for expensive failed seeks into chunked recordings."""
++
++import json
++from pathlib import Path
++import shutil
++import subprocess
++
++import pytest
++
++from conf_render.ffmpeg import _write_concat_file, write_artifacts
++from conf_render.models import Manifest
++from conf_render.probe import probe_chunked_media
++from conf_render.timeline import build_plan
++
++
++@pytest.mark.parametrize("durations", [(), (1000,), (1000, 0), (1000, -1)])
++def test_missing_chunk_durations_fail_before_render(tmp_path: Path, durations: tuple[int, ...]) -> None:
++    with pytest.raises(ValueError, match="chunk durations"):
++        _write_concat_file((Path("one.mp4"), Path("two.mp4")), tmp_path / "chunks.ffconcat", durations)
++
++
++@pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"), reason="FFmpeg unavailable")
++def test_chunked_input_is_seekable(tmp_path: Path) -> None:
++    # Spaces exercise the actual concat parser, not just text output.
++    paths = tuple(tmp_path / f"speaker talk_{index:04d}.mp4" for index in range(2))
++    for path, color in zip(paths, ("red", "green")):
++        subprocess.run([
++            "ffmpeg", "-v", "error", "-nostdin", "-y", "-f", "lavfi", "-i",
++            f"color={color}:size=96x54:rate=12:duration=1", "-c:v", "libx264",
++            "-threads", "1", "-bf", "0", "-pix_fmt", "yuv420p", str(path),
++        ], check=True)
++    info = probe_chunked_media(paths[0], paths)
++    manifest = Manifest.model_validate({
++        "version": 1,
++        "settings": {"width": 96, "height": 54, "fps": 12, "videoEncoder": "software"},
++        "jobs": [{"id": "seek", "segments": [{
++            "type": "chunkedVideo", "src": str(paths[0]),
++            "in": "00:00:00.500", "out": "00:00:01.800",
++        }]}],
++    })
++    plan = build_plan(manifest.jobs[0], manifest.settings, {paths[0]: info})
++    artifacts = write_artifacts(plan, tmp_path / "output.mp4", tmp_path / "work", True)
++    concat = artifacts.concat_files[0]
++    # ffprobe requires a real seek here. A list without durations fails instead
++    # of decoding from the beginning as a normal ffmpeg render would do.
++    result = subprocess.run([
++        "ffprobe", "-v", "error", "-f", "concat", "-safe", "0",
++        "-read_intervals", "0.500%+0.1", "-select_streams", "v:0",
++        "-show_entries", "packet=pts_time", "-of", "json", str(concat),
++    ], capture_output=True, text=True, check=True)
++    assert not result.stderr.strip()
++    packets = json.loads(result.stdout)["packets"]
++    assert packets
++    assert 0.0 <= float(packets[0]["pts_time"]) <= 0.5
+diff --git a/tests/test_render_diagnostics.py b/tests/test_render_diagnostics.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_render_diagnostics.py
+@@ -0,0 +1,48 @@
++from pathlib import Path
++import sys
++
++import pytest
++
++from conf_render.ffmpeg import build_command
++from conf_render.progress import FFmpegError, run_ffmpeg
++from test_ffmpeg import make_audio_plan
++
++
++def test_each_input_and_output_has_explicit_threads(monkeypatch):
++    monkeypatch.setattr("conf_render.ffmpeg.resolve_video_encoder", lambda requested: "libx264")
++    monkeypatch.setenv("STREAMCTL_RENDER_INPUT_THREADS", "2")
++    monkeypatch.setenv("STREAMCTL_RENDER_FILTER_THREADS", "4")
++    command = build_command(make_audio_plan(), Path("output.mp4"), True)
++    previous = 0
++    for index, value in enumerate(command):
++        if value == "-i":
++            options = command[previous:index]
++            assert options[options.index("-threads") + 1] == "2"
++            previous = index + 2
++    options = command[previous:]
++    assert options[options.index("-threads") + 1] == "2"
++    assert command[command.index("-filter_complex_threads") + 1] == "4"
++
++
++@pytest.mark.parametrize("value", ["0", "-1", "65", "bad"])
++def test_invalid_thread_limits_fail_before_launch(monkeypatch, value):
++    monkeypatch.setenv("STREAMCTL_RENDER_INPUT_THREADS", value)
++    with pytest.raises(ValueError):
++        build_command(make_audio_plan(), Path("output.mp4"), True)
++
++
++def test_sigkill_keeps_complete_ffmpeg_stderr(tmp_path, monkeypatch):
++    script = tmp_path / "fake-ffmpeg"
++    script.write_text(f"#!{sys.executable}\nimport os,signal,sys\n"
++                      "sys.stderr.write('Original failure evidence\\n' + 'noise\\n' * 500)\n"
++                      "sys.stderr.flush()\nos.kill(os.getpid(), signal.SIGKILL)\n")
++    script.chmod(0o755)
++    directory = tmp_path / "diagnostics"
++    monkeypatch.setenv("STREAMCTL_RENDER_DIAGNOSTICS_DIR", str(directory))
++    messages = []
++    with pytest.raises(FFmpegError, match="exit -9"):
++        run_ffmpeg([str(script)], 1000, report=messages.append)
++    files = list(directory.glob("*.stderr.log"))
++    assert len(files) == 1
++    assert files[0].read_text().startswith("Original failure evidence\n")
++    assert "Original failure evidence" in "\n".join(messages)

@@ -274,7 +274,7 @@ containers. Each render attempt has separate working/output directories under
 new retry. Both execution paths enforce a 48-hour runtime limit independently
 of the controller. Cancellation stops the process group before deleting files.
 Successful uploads remove job-specific inputs and outputs; the controller also
-cleans up failed attempts. Shared source files remain in
+cleans up failed attempts unless diagnostic preservation is enabled. Shared source files remain in
 `/workspace/streamctl-input-cache` for the next jobs on that worker. Remote size,
 modification time, and available hashes identify each cached version. Jobs use
 hard links, not duplicate local copies; incomplete downloads cannot be reused.
@@ -292,12 +292,53 @@ Run cache tests with `python3 -B -m unittest discover -s
 streamctl/internal/handlers/worker -p test_input_cache.py -v` from this directory.
 
 Managed-worker readiness includes a tiny real `conf-render` NVENC render using
-the pinned revision and normalized-output settings. RunPod installation is
+the pinned revision and normalized-output settings. The worker's renderer patch
+also carries each probed chunk duration into its concat lists. Without these
+durations, FFmpeg cannot seek directly to later cuts and can decode hours of
+discarded footage before reaching them. The patch includes regression tests;
+on a renderer checkout with its development dependencies and FFmpeg installed,
+run `python -m pytest tests/test_probe.py tests/test_timeline.py
+tests/test_ffmpeg.py tests/test_concat_seek.py tests/test_integration.py`.
+Updating worker setup does not alter an already running FFmpeg command.
+
+Renders use two decoder threads per input and four filter threads, avoiding
+automatic thread counts based on the host's CPUs rather than the container's
+quota. Custom workers can set `STREAMCTL_RENDER_INPUT_THREADS` and
+`STREAMCTL_RENDER_FILTER_THREADS` (1–64). These limits reduce resource pressure;
+they are not a promise of faster rendering.
+
+Every render records cgroup memory usage/limits/peak, OOM kill counters, CPU
+quota/throttling, process RSS/thread counts/CPU time, and free disk space every
+10 seconds. FFmpeg reports timestamp/speed/FPS every 30 seconds and retains its
+complete stderr. Files live in the attempt's `work/diagnostics/` directory;
+resource samples and full failure stderr also enter the job journal, which the
+controller checkpoints every 30 seconds. An increased `oom_kill_delta` establishes
+an OOM kill during the render; a missing counter is reported as unavailable,
+not zero. Kernel messages are collected when permitted.
+
+For a supervised diagnostic retry, set `services.streamctl.gpuPreserveWorker =
+true` (CLI `-gpu-preserve-worker=true`). This disables all automatic worker
+destruction, including cleanup triggered by older jobs, and preserves failed
+render workspaces. Manual worker destruction remains available. **Workers remain
+billable while preserved**; inspect the evidence, destroy the worker when done,
+and turn this diagnostic setting off. Successful uploads still clean up their
+attempt workspace. Run monitor regressions with `python3 -B -m unittest discover
+-s streamctl/internal/handlers/worker -p test_render_diagnostics.py -v`.
+
+RunPod installation is
 limited to 20 minutes, with logs at `/root/streamctl-worker-setup.log`; a failed
 setup never becomes ready. Inspect provider logs if installation failed before
 SSH was installed. Failed setup does not automatically destroy the pod: inspect
 and **terminate it promptly** to stop charges. Runtime limits stop jobs, not
 provider billing; do not rely on them as a spending cap.
+
+The controller uses RunPod REST API v2 (`https://api.runpod.io/v2`); v1 was
+retired in November 2026. Worker discovery follows pagination and fetches the
+selected pod's details for its direct SSH address (list responses omit it).
+Creation explicitly requests the GPU, an 80 GB container disk, an 80 GB
+persistent `/workspace` mount, and port `22/tcp`, and preserves the setup command
+as an argument array. Saved job logs are history, not live worker state, so a
+snapshot from a removed worker cannot block queue dispatch on its replacement.
 
 Before production rollout, run the live GPU acceptance test: short render with
 audio/overlay/transcription, verify uploaded artifacts, retry a failure, cancel
@@ -388,6 +429,21 @@ make destroy               # terraform destroy
 **Why doctl for auth?** Avoids storing the API token in a file. Make calls `doctl auth token` at runtime and exports the result as `DIGITALOCEAN_TOKEN` for that single Terraform invocation.
 
 ## Troubleshooting
+
+The NixOS deployment runs `streamctl-media-cleanup.service` every 15 minutes
+when `services.streamctl.cleanupCache` is enabled (the default). It removes
+unused cached media and inactive HLS output older than one hour. It preserves
+media needed by upcoming streams and skips cleanup while playback or prefetch
+holds the shared cache lock. Missing timer state preserves the affected media;
+database or systemd query failures abort cleanup. Original uploads, Spaces
+objects, the database, credentials, and retained render logs are outside its
+cleanup directories. The host caps the system journal at 512 MB and collects
+unused Nix store paths daily, retaining system generations for 14 days.
+
+To run media cleanup immediately, use
+`ssh root@$(make ip) systemctl start streamctl-media-cleanup.service`.
+The same age and activity checks apply to manual runs. Inspect its summary with
+`ssh root@$(make ip) journalctl -u streamctl-media-cleanup.service -n 10`.
 
 **`make create` fails with "doctl auth token returned nothing"**: Run `doctl auth list` and confirm a context exists. If not, `doctl auth init`.
 

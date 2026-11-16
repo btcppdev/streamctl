@@ -12,6 +12,7 @@ import (
 func (m *Manager) renderPrefetchScript(s *db.Stream) string {
 	var b strings.Builder
 	b.WriteString("#!/run/current-system/sw/bin/bash\nset -euo pipefail\nexport PATH=/run/current-system/sw/bin:/bin\n")
+	b.WriteString(m.renderMediaLock())
 	if strings.TrimSpace(m.NotifyEmail) != "" {
 		b.WriteString(m.renderNotifyFunction(s))
 		b.WriteString("trap 'rc=$?; notify failure; exit $rc' ERR\n")

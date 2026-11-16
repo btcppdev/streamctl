@@ -236,6 +236,12 @@
               description = "Destroy the managed GPU worker Droplet after a successful transcode job.";
             };
 
+            gpuPreserveWorker = lib.mkOption {
+              type = lib.types.bool;
+              default = false;
+              description = "Diagnostic mode: disable automatic worker destruction and retain failed render workspaces. Workers remain billable until manually destroyed.";
+            };
+
             remote = lib.mkOption {
               type = lib.types.str;
               default = "";
@@ -263,7 +269,7 @@
             cleanupCache = lib.mkOption {
               type = lib.types.bool;
               default = true;
-              description = "Delete cached remote files after ffmpeg exits successfully.";
+              description = "Every 15 minutes, delete unused cached media and inactive HLS files older than one hour, protecting active jobs and upcoming streams.";
             };
 
             dataDir = lib.mkOption {
@@ -310,10 +316,14 @@
 
             users.groups.${cfg.group} = { };
 
+            # Generated stream scripts use flock to exclude media cleanup.
+            environment.systemPackages = [ pkgs.util-linux ];
+
             systemd.tmpfiles.rules = [
               "d ${cfg.dataDir} 0750 ${cfg.user} ${cfg.group} - -"
               "d ${cfg.videoDir} 0750 ${cfg.user} ${cfg.group} - -"
               "d ${cfg.cacheDir} 0750 ${cfg.user} ${cfg.group} - -"
+              "f ${cfg.cacheDir}/.cleanup.lock 0640 ${cfg.user} ${cfg.group} - -"
               "d ${cfg.hlsDir} 0750 ${cfg.user} ${cfg.group} - -"
               "d ${cfg.nostrKeyDir} 0750 ${cfg.user} ${cfg.group} - -"
             ];
@@ -365,6 +375,7 @@
                     -gpu-ssh-key-name=${cfg.gpuSSHKeyName} \
                     -gpu-worker-user=${cfg.gpuWorkerUser} \
                     -gpu-destroy-after-job=${lib.boolToString cfg.gpuDestroyAfterJob} \
+                    -gpu-preserve-worker=${lib.boolToString cfg.gpuPreserveWorker} \
                     -remote=${cfg.remote} \
                     -rclone-config=${cfg.rcloneConfigFile} \
                     -notify-email=${cfg.notificationEmail} \
@@ -392,6 +403,41 @@
               '';
             };
 
+            systemd.services.streamctl-media-cleanup = lib.mkIf cfg.cleanupCache {
+              description = "Remove unused streamctl media cache and stale HLS files";
+              after = [ "streamctl.service" ];
+              requires = [ "streamctl.service" ];
+              path = [ pkgs.systemd ];
+              serviceConfig = {
+                Type = "oneshot";
+                User = cfg.user;
+                Group = cfg.group;
+                ExecStart = lib.escapeShellArgs [
+                  "${pkgs.python3}/bin/python3"
+                  "${./nixos/media_cleanup.py}"
+                  "--database" "${cfg.dataDir}/streamctl.db"
+                  "--cache" cfg.cacheDir
+                  "--hls" cfg.hlsDir
+                  "--apply"
+                ];
+                TimeoutStartSec = "5min";
+                ProtectSystem = "strict";
+                ProtectHome = true;
+                PrivateTmp = true;
+                NoNewPrivileges = true;
+                ReadWritePaths = [ cfg.cacheDir cfg.hlsDir ];
+              };
+            };
+
+            systemd.timers.streamctl-media-cleanup = lib.mkIf cfg.cleanupCache {
+              wantedBy = [ "timers.target" ];
+              timerConfig = {
+                OnBootSec = "5min";
+                OnUnitActiveSec = "15min";
+                AccuracySec = "1min";
+              };
+            };
+
             networking.firewall = lib.mkIf cfg.openFirewall {
               allowedTCPPorts = [
                 (lib.toInt (lib.last (lib.splitString ":" cfg.listen)))
@@ -413,6 +459,13 @@
       {
         packages.default = streamctlPackage pkgs;
         packages.streamctl = streamctlPackage pkgs;
+
+        checks.media-cleanup = pkgs.runCommand "streamctl-media-cleanup-tests" {
+          nativeBuildInputs = [ pkgs.python3 ];
+        } ''
+          python3 -B -m unittest discover -s ${./nixos} -p test_media_cleanup.py -v
+          touch $out
+        '';
 
         checks.worker-input-cache = pkgs.runCommand "streamctl-worker-input-cache-tests" {
           nativeBuildInputs = [ pkgs.python3 pkgs.rclone ];

@@ -28,8 +28,10 @@ func remoteGPUStopCommand(unit string) string {
 	}, "\n")
 }
 
-// The pinned renderer emits a trailing empty filter, rejected by Ubuntu 22.04's
-// FFmpeg. Apply a checked patch during setup until the upstream pin includes it.
+// Fix the pinned renderer's trailing empty filter and retain probed chunk
+// durations in concat lists, allowing FFmpeg to seek directly to late cuts.
+// Bound decoder/filter threads and retain complete FFmpeg failure diagnostics.
+// Apply a checked patch during setup until the upstream pin includes these fixes.
 func confRenderCompatibilityCommand() string {
 	return "printf '%s' " + shellQuote(base64.StdEncoding.EncodeToString([]byte(confRenderFFmpegCompatibilityPatch))) + " | base64 -d | git -C /root/conf-render apply -"
 }

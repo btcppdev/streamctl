@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"streamctl/internal/db"
 )
 
 func renderLogTestSSH(t *testing.T, state, journal string) (string, string) {
@@ -180,7 +182,7 @@ func TestArchiveCleanupRetryDoesNotReadFullLogAgain(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, calls := renderLogTestSSH(t, "LoadState=loaded\nActiveState=inactive\nResult=success", "complete output\n")
-	h := &Handler{DB: database, GPUWorkerHost: "worker"}
+	h := &Handler{DB: database, GPUWorkerHost: "worker", GPUPreserveWorker: true}
 	if !h.finishRenderAttempt(context.Background(), "worker", item.ID, unit, "finished", "") {
 		t.Fatal("completion blocked")
 	}
@@ -200,5 +202,83 @@ func TestArchiveCleanupRetryDoesNotReadFullLogAgain(t *testing.T) {
 	saved, _ = database.GetGPUJobLog(unit)
 	if saved.Error != "" {
 		t.Fatalf("cleanup still pending: %s", saved.Error)
+	}
+}
+
+func TestRenderDiagnosticModeKeepsFailedWorkspaceAndWorker(t *testing.T) {
+	database := openGPUQueueTestDB(t)
+	item, err := database.EnqueueRenderJob("Diagnostic retry", `{}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unit := renderUnitName(item.ID, 1)
+	if err := database.MarkRenderQueueRunning(item.ID, unit); err != nil {
+		t.Fatal(err)
+	}
+	_, calls := renderLogTestSSH(t, "LoadState=loaded\nActiveState=failed\nResult=exit-code", "FFmpeg exit -9\nOOM counter increased\n")
+	h := &Handler{DB: database, GPUWorkerHost: "worker", GPUPreserveWorker: true, GPUDestroyAfterJob: true}
+	if !h.finishRenderAttempt(context.Background(), "worker", item.ID, unit, "failed", "") {
+		t.Fatal("diagnostic failure did not finish")
+	}
+	h.retryPendingGPUJobLogs(context.Background())
+	commands, _ := os.ReadFile(calls)
+	if strings.Contains(string(commands), "rm -rf") {
+		t.Fatalf("diagnostic workspace was deleted: %s", commands)
+	}
+	current, _ := database.GetRenderQueueItem(item.ID)
+	if current.Status != "failed" {
+		t.Fatalf("unexpected queue state: %+v", current)
+	}
+	if saved, err := database.GetGPUJobLog(unit); err != nil || !strings.Contains(saved.Journal, "OOM counter increased") || saved.Error != "" {
+		t.Fatalf("diagnostic log not retained: %+v %v", saved, err)
+	}
+	before, _ := os.ReadFile(calls)
+	h.retryPendingGPUJobLogs(context.Background())
+	after, _ := os.ReadFile(calls)
+	if string(before) != string(after) {
+		t.Fatal("preserved workspace caused repeated archival")
+	}
+	// Preservation takes precedence even when another old/successful job
+	// triggers cleanup from the dashboard. No database/provider access is needed.
+	h = &Handler{GPUPreserveWorker: true, GPUDestroyAfterJob: true, DOTokenFile: "missing-token"}
+	h.destroyManagedGPUAfterTerminalJob(context.Background(), gpuJobView{ActiveState: "inactive", Result: "success"})
+}
+
+func TestCachedRunningRenderDoesNotBlockReplacementWorker(t *testing.T) {
+	database := openGPUQueueTestDB(t)
+	if err := database.UpsertGPUJobLog(db.GPUJobLog{
+		UnitName: renderUnitName(42, 1), Host: "old-worker", ActiveState: "running", Journal: "last resource sample",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h := &Handler{DB: database}
+	status := h.appendCachedGPUJobs(gpuStatusView{Host: "new-worker", Available: true})
+	if len(status.Jobs) != 1 || !status.Jobs[0].Cached || isBlockingGPUJob(status.Jobs[0]) || isTerminalGPUJob(status.Jobs[0]) {
+		t.Fatalf("cached snapshot affected live scheduling: %+v", status)
+	}
+	if !isBlockingGPUJob(gpuJobView{ActiveState: "running"}) {
+		t.Fatal("live running job no longer blocks dispatch")
+	}
+}
+
+func TestRenderReconciliationRefreshesCachedState(t *testing.T) {
+	database := openGPUQueueTestDB(t)
+	item, err := database.EnqueueRenderJob("Review", `{}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unit := renderUnitName(item.ID, 1)
+	if err := database.MarkRenderQueueRunning(item.ID, unit); err != nil {
+		t.Fatal(err)
+	}
+	_, calls := renderLogTestSSH(t, "LoadState=loaded\nActiveState=running\nResult=", "still rendering")
+	h := &Handler{DB: database}
+	h.reconcileRenderJobs(context.Background(), "worker", []gpuJobView{{
+		UnitName: unit, ActiveState: "failed", Cached: true,
+	}}, true)
+	current, _ := database.GetRenderQueueItem(item.ID)
+	commands, _ := os.ReadFile(calls)
+	if current.Status != "running" || !strings.Contains(string(commands), "systemctl show") {
+		t.Fatalf("cached status trusted without live verification: %+v %s", current, commands)
 	}
 }

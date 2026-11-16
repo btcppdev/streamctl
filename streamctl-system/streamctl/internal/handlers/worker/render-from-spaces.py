@@ -14,12 +14,35 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
 
 def fail(message: str) -> None:
     raise SystemExit(message)
+
+
+def terminate_operation(process: subprocess.Popen) -> None:
+    """Kill the entire operation, including FFmpeg/download subprocesses."""
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        process.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.communicate()
+    # The wrapper may have exited while a child ignored SIGTERM.
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
 
 
 def run(*args: str, capture: bool = False, timeout: float | None = None,
@@ -37,24 +60,7 @@ def run(*args: str, capture: bool = False, timeout: float | None = None,
     try:
         stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        # Kill the entire operation, including FFmpeg/download subprocesses.
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        try:
-            process.communicate(timeout=5)
-        except subprocess.TimeoutExpired:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            process.communicate()
-        # The wrapper may have exited while a child ignored SIGTERM.
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        terminate_operation(process)
         fail(f"{Path(args[0]).name} operation timed out after {timeout:g}s")
     if process.returncode:
         if capture and stderr:
@@ -73,6 +79,171 @@ def prepare_whisper(renderer: str) -> dict:
         "load_whisper_runtime('distil-large-v3', print)", timeout=timeout)
     # The warmed model is now local; avoid network retries in the render lane.
     return {**os.environ, "HF_HUB_OFFLINE": "1"}
+
+
+def read_text(path: Path) -> str | None:
+    try:
+        return path.read_text().strip()
+    except OSError:
+        return None
+
+
+def counters(value: str | None) -> dict[str, int]:
+    result = {}
+    for line in (value or "").splitlines():
+        fields = line.split()
+        if len(fields) == 2 and fields[1].lstrip("-").isdigit():
+            result[fields[0]] = int(fields[1])
+    return result
+
+
+def cgroup_paths(proc: Path = Path("/proc")) -> dict[str, Path]:
+    """Resolve the current cgroup through mount roots, including container namespaces."""
+    memberships = {}
+    for line in (read_text(proc / "self/cgroup") or "").splitlines():
+        _, controllers, member = line.split(":", 2)
+        for controller in controllers.split(","):
+            memberships[controller] = member
+    paths = {}
+    for line in (read_text(proc / "self/mountinfo") or "").splitlines():
+        left, _, right = line.partition(" - ")
+        fields, filesystem = left.split(), right.split()
+        if len(fields) < 5 or len(filesystem) < 3 or filesystem[0] not in {"cgroup", "cgroup2"}:
+            continue
+        controllers = [""] if filesystem[0] == "cgroup2" else filesystem[2].split(",")
+        for controller in controllers:
+            if controller not in memberships:
+                continue
+            root, mount = (Path(re.sub(r"\\([0-7]{3})", lambda m: chr(int(m[1], 8)), value))
+                           for value in fields[3:5])
+            member = Path(memberships[controller])
+            try:
+                relative = member.relative_to(root)
+            except ValueError:
+                # A private cgroup namespace reports membership relative to its root.
+                relative = Path(str(member).lstrip("/"))
+            paths[controller or "unified"] = mount / relative
+    return paths
+
+
+def cgroup_snapshot(paths: dict[str, Path]) -> dict:
+    result = {}
+    for controller, path in paths.items():
+        if controller == "unified":
+            names = ("memory.current", "memory.peak", "memory.max", "memory.swap.current",
+                     "memory.events", "memory.stat", "cpu.max", "cpu.stat", "pids.current", "pids.max")
+        elif controller == "memory":
+            names = ("memory.usage_in_bytes", "memory.max_usage_in_bytes", "memory.limit_in_bytes",
+                     "memory.failcnt", "memory.oom_control", "memory.stat")
+        elif controller == "cpu":
+            names = ("cpu.cfs_quota_us", "cpu.cfs_period_us", "cpu.stat")
+        else:
+            continue
+        result[controller] = {name: value for name in names if (value := read_text(path / name)) is not None}
+    return result
+
+
+def oom_kills(snapshot: dict) -> int | None:
+    for controller, filename in (("unified", "memory.events"), ("memory", "memory.oom_control")):
+        count = counters(snapshot.get(controller, {}).get(filename)).get("oom_kill")
+        if count is not None:
+            return count
+    return None
+
+
+def process_snapshot(root_pid: int, proc: Path = Path("/proc")) -> list[dict]:
+    processes = {}
+    try:
+        entries = list(proc.iterdir())
+    except OSError:
+        return []
+    for entry in entries:
+        if not entry.name.isdecimal():
+            continue
+        status = dict(line.split(":", 1) for line in (read_text(entry / "status") or "").splitlines() if ":" in line)
+        if "PPid" not in status:
+            continue
+        item = {"pid": int(entry.name), "ppid": int(status["PPid"]), "name": status.get("Name", "").strip()}
+        for key in ("Threads", "VmRSS", "VmHWM", "VmSwap"):
+            if key in status:
+                item[key] = int(status[key].split()[0])  # Vm* values are KiB.
+        item["io"] = counters(read_text(entry / "io"))
+        stat = (read_text(entry / "stat") or "").rpartition(") ")[2].split()
+        if len(stat) > 12:
+            item["cpu_seconds"] = (int(stat[11]) + int(stat[12])) / os.sysconf("SC_CLK_TCK")
+        processes[item["pid"]] = item
+    descendants = {root_pid}
+    while True:
+        found = {pid for pid, item in processes.items() if item["ppid"] in descendants}
+        if found <= descendants:
+            break
+        descendants |= found
+    return [processes[pid] for pid in sorted(descendants) if pid in processes]
+
+
+def run_render(args: list[str], work: Path, interval: float = 10, *,
+               timeout: float = 48 * 3600, env: dict | None = None) -> None:
+    """Keep resource evidence both on disk and in the controller-retained journal."""
+    if not math.isfinite(timeout) or timeout <= 0:
+        fail("worker operation timeout must be positive")
+    directory = work / "diagnostics"
+    directory.mkdir(parents=True, exist_ok=True)
+    paths = cgroup_paths()
+    baseline = cgroup_snapshot(paths)
+    started = time.monotonic()
+    stopped = threading.Event()
+    environment = dict(os.environ if env is None else env, STREAMCTL_RENDER_DIAGNOSTICS_DIR=str(directory))
+    with (directory / "resources.jsonl").open("w", buffering=1) as log:
+        def emit(kind: str, **values) -> None:
+            record = {"event": kind, "at": datetime.now(timezone.utc).isoformat(),
+                      "elapsed_seconds": round(time.monotonic() - started, 2), **values}
+            line = json.dumps(record, sort_keys=True)
+            log.write(line + "\n")
+            print("render-diagnostics: " + line, file=sys.stderr, flush=True)
+
+        emit("start", cgroup_paths={key: str(value) for key, value in paths.items()},
+             cgroup=baseline, host_cpu_count=os.cpu_count(),
+             input_threads=environment.get("STREAMCTL_RENDER_INPUT_THREADS", "2"),
+             filter_threads=environment.get("STREAMCTL_RENDER_FILTER_THREADS", "4"))
+        print("+ " + " ".join(args), file=sys.stderr, flush=True)
+        process = subprocess.Popen(args, env=environment, start_new_session=True)
+
+        def sample() -> None:
+            while not stopped.is_set():
+                try:
+                    emit("sample", cgroup=cgroup_snapshot(paths), processes=process_snapshot(process.pid),
+                         disk_free_bytes=shutil.disk_usage(work).free)
+                except Exception as error:
+                    emit("monitor_error", error=str(error))
+                stopped.wait(interval)
+
+        monitor = threading.Thread(target=sample, name="render-resource-monitor", daemon=True)
+        monitor.start()
+        timed_out = False
+        try:
+            return_code = process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            terminate_operation(process)
+            return_code = process.returncode
+        finally:
+            stopped.set()
+            monitor.join()
+        final = cgroup_snapshot(paths)
+        before, after = oom_kills(baseline), oom_kills(final)
+        emit("exit", return_code=return_code, timed_out=timed_out, cgroup=final,
+             oom_kill_delta=after - before if before is not None and after is not None else None)
+        if timed_out:
+            fail(f"{Path(args[0]).name} operation timed out after {timeout:g}s")
+        if return_code:
+            try:
+                kernel = subprocess.run(["dmesg", "--ctime"], capture_output=True, text=True, timeout=5)
+                lines = [line for line in kernel.stdout.splitlines()
+                         if re.search(r"oom|out of memory|killed process|nvrm|xid", line, re.I)]
+                emit("kernel", return_code=kernel.returncode, lines=lines[-40:], error=kernel.stderr.strip())
+            except (OSError, subprocess.TimeoutExpired) as error:
+                emit("kernel", error=str(error))
+            raise subprocess.CalledProcessError(return_code, args)
 
 
 def remote_path(remote: str, key: str) -> str:
@@ -298,7 +469,8 @@ def main() -> None:
     localized.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     run(conf_render, "validate", str(localized), timeout=120)
     render_env = prepare_whisper(conf_render) if any(transcription_enabled(job) for job in manifest["jobs"]) else None
-    run(conf_render, "render", str(localized), "--output", str(output), "--work-dir", str(work / "conf-render"), "--overwrite", timeout=48 * 3600, env=render_env)
+    run_render([conf_render, "render", str(localized), "--output", str(output),
+                "--work-dir", str(work / "conf-render"), "--overwrite"], work, timeout=48 * 3600, env=render_env)
 
     missing: list[str] = []
     for job in manifest["jobs"]:

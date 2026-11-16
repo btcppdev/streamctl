@@ -181,7 +181,9 @@ func (m *Manager) Sync(s *db.Stream) error {
 	if err := systemctl("start", m.timerName(s.ID)); err != nil {
 		return err
 	}
-	if m.needsPrefetch(s) {
+	// Expired timers still have enabled stream records. Do not download their
+	// media again on every restart; a manual start still requires prefetch.
+	if m.needsPrefetch(s) && m.NextTrigger(s.ID) != "" {
 		if err := systemctl("start", "--no-block", m.prefetchName(s.ID)); err != nil {
 			return fmt.Errorf("starting prefetch: %w", err)
 		}
@@ -272,11 +274,15 @@ func parseStreamRuntime(output string) StreamRuntime {
 
 // NextTrigger returns the next scheduled run time (raw systemctl output) or "" if none.
 func (m *Manager) NextTrigger(streamID int64) string {
-	out, err := exec.Command("systemctl", "show", m.timerName(streamID), "--property=NextElapseRealtime", "--value").Output()
+	out, err := exec.Command("systemctl", "show", m.timerName(streamID), "--property=NextElapseUSecRealtime", "--value").Output()
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	next := strings.TrimSpace(string(out))
+	if next == "n/a" {
+		return ""
+	}
+	return next
 }
 
 // NextTriggerUnix returns the next timer trigger as Unix seconds, or 0 when
@@ -542,6 +548,7 @@ func (m *Manager) renderRunScript(s *db.Stream) string {
 	b.WriteString("#!/run/current-system/sw/bin/bash\n")
 	b.WriteString("set -euo pipefail\n")
 	b.WriteString("export PATH=/run/current-system/sw/bin:/bin\n")
+	b.WriteString(m.renderMediaLock())
 	b.WriteString("/run/current-system/sw/bin/mkdir -p ")
 	b.WriteString(shellQuote(m.hlsPath(s.ID)))
 	b.WriteString("\n")
@@ -576,13 +583,20 @@ func (m *Manager) renderRunScript(s *db.Stream) string {
 		b.WriteString("\nfi\n")
 	}
 	b.WriteString(m.renderNostrPublishCommand(s, "ended"))
-	if m.CleanupCache && m.needsPrefetch(s) {
-		b.WriteString("if [ \"$stream_rc\" -eq 0 ]; then\n")
-		b.WriteString(m.renderCleanupScriptBody(s))
-		b.WriteString("fi\n")
-	}
+	// The periodic cleaner accounts for other streams sharing these files.
 	b.WriteString("exit \"$stream_rc\"\n")
 	return b.String()
+}
+
+// Hold the cache lock for the lifetime of playback/downloads, including child
+// processes. The periodic media cleaner takes it exclusively and never waits.
+func (m *Manager) renderMediaLock() string {
+	if strings.TrimSpace(m.CacheDir) == "" {
+		return ""
+	}
+	return "/run/current-system/sw/bin/mkdir -p " + shellQuote(m.CacheDir) + "\n" +
+		"exec 9>>" + shellQuote(filepath.Join(m.CacheDir, ".cleanup.lock")) + "\n" +
+		"/run/current-system/sw/bin/flock --shared 9\n"
 }
 
 func (m *Manager) btcppBroadcastConfigured(s *db.Stream) bool {
