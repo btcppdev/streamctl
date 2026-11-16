@@ -24,7 +24,7 @@ case "$command" in
  'systemctl show '*) printf '%s\n' "$TEST_JOB_STATE" ;;
  'journalctl '*) cat "$TEST_JOB_JOURNAL" ;;
  'if [ -f '*) printf 'failed\n1\n' ;;
- 'rm -rf '*) : ;;
+ 'rm -rf '*) [ "${TEST_CLEANUP_FAIL:-0}" = 0 ] ;;
  *) exit 1 ;;
 esac
 `
@@ -56,12 +56,13 @@ func TestRenderCompletionRetainsFullLogsWithoutDashboard(t *testing.T) {
 				state = "LoadState=not-found\nActiveState=inactive\nResult=success"
 			}
 			_, calls := renderLogTestSSH(t, state, journal)
-			h := &Handler{DB: database}
+			h := &Handler{DB: database, GPUWorkerHost: "worker"}
 			h.reconcileRenderJobs(context.Background(), "worker", nil, true)
 			current, err := database.GetRenderQueueItem(item.ID)
 			if err != nil || current.Status != "failed" {
 				t.Fatalf("completion: %+v %v", current, err)
 			}
+			h.retryPendingGPUJobLogs(context.Background())
 			cached, err := database.GetGPUJobLog(unit)
 			if err != nil || cached.Journal != strings.TrimSpace(journal) {
 				t.Fatalf("full journal not retained: %+v %v", cached, err)
@@ -72,6 +73,12 @@ func TestRenderCompletionRetainsFullLogsWithoutDashboard(t *testing.T) {
 			}
 			if strings.Contains(string(commands), "-n 300") || !strings.Contains(string(commands), "rm -rf") {
 				t.Fatalf("unexpected log/cleanup commands: %s", commands)
+			}
+			before, _ := os.ReadFile(calls)
+			h.retryPendingGPUJobLogs(context.Background())
+			after, _ := os.ReadFile(calls)
+			if string(before) != string(after) {
+				t.Fatal("completed archive was collected again")
 			}
 			// The worker is now unavailable; the existing Logs endpoint must still work.
 			w := httptest.NewRecorder()
@@ -90,7 +97,7 @@ func TestRenderCompletionRetainsFullLogsWithoutDashboard(t *testing.T) {
 	}
 }
 
-func TestRenderLogCollectionFailurePreservesAttemptForRetry(t *testing.T) {
+func TestRenderLogCollectionFailureReleasesQueueAndPreservesEvidence(t *testing.T) {
 	for _, journal := range []string{"", "-- No entries --"} {
 		t.Run(journal, func(t *testing.T) {
 			database := openGPUQueueTestDB(t)
@@ -103,11 +110,16 @@ func TestRenderLogCollectionFailurePreservesAttemptForRetry(t *testing.T) {
 				t.Fatal(err)
 			}
 			logFile, calls := renderLogTestSSH(t, "LoadState=loaded\nActiveState=failed\nResult=exit-code", journal)
-			h := &Handler{DB: database}
+			h := &Handler{DB: database, GPUWorkerHost: "worker"}
 			h.reconcileRenderJobs(context.Background(), "worker", nil, true)
 			current, err := database.GetRenderQueueItem(item.ID)
-			if err != nil || current.Status != "running" || !strings.Contains(current.LastError, "Waiting to retain worker logs") {
-				t.Fatalf("attempt not retained: %+v %v", current, err)
+			if err != nil || current.Status != "failed" {
+				t.Fatalf("terminal attempt blocked execution: %+v %v", current, err)
+			}
+			h.retryPendingGPUJobLogs(context.Background())
+			pending, _ := database.GetGPUJobLog(unit)
+			if !strings.HasPrefix(pending.Error, gpuLogPendingPrefix) {
+				t.Fatal("missing pending archive")
 			}
 			commands, _ := os.ReadFile(calls)
 			if strings.Contains(string(commands), "rm -rf") {
@@ -116,7 +128,7 @@ func TestRenderLogCollectionFailurePreservesAttemptForRetry(t *testing.T) {
 			if err := os.WriteFile(logFile, []byte("FFmpeg failure\n"), 0600); err != nil {
 				t.Fatal(err)
 			}
-			h.reconcileRenderJobs(context.Background(), "worker", nil, true)
+			h.retryPendingGPUJobLogs(context.Background())
 			current, err = database.GetRenderQueueItem(item.ID)
 			if err != nil || current.Status != "failed" {
 				t.Fatalf("retry did not finish: %+v %v", current, err)
@@ -143,8 +155,8 @@ func TestRenderLogPersistenceFailurePreventsCleanup(t *testing.T) {
 	if _, err := database.Exec("DROP TABLE gpu_job_logs"); err != nil {
 		t.Fatal(err)
 	}
-	h := &Handler{DB: database}
-	if h.finishRenderAttemptWithLogs(context.Background(), "worker", item.ID, unit, "failed", "") {
+	h := &Handler{DB: database, GPUWorkerHost: "worker"}
+	if h.finishRenderAttempt(context.Background(), "worker", item.ID, unit, "failed", "") {
 		t.Fatal("completed without durable logs")
 	}
 	current, err := database.GetRenderQueueItem(item.ID)
@@ -154,5 +166,39 @@ func TestRenderLogPersistenceFailurePreventsCleanup(t *testing.T) {
 	commands, _ := os.ReadFile(calls)
 	if strings.Contains(string(commands), "rm -rf") {
 		t.Fatal("cleanup ran despite log persistence failure")
+	}
+}
+
+func TestArchiveCleanupRetryDoesNotReadFullLogAgain(t *testing.T) {
+	database := openGPUQueueTestDB(t)
+	item, err := database.EnqueueRenderJob("Review", `{"version":1,"jobs":[]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unit := renderUnitName(item.ID, 1)
+	if err := database.MarkRenderQueueRunning(item.ID, unit); err != nil {
+		t.Fatal(err)
+	}
+	_, calls := renderLogTestSSH(t, "LoadState=loaded\nActiveState=inactive\nResult=success", "complete output\n")
+	h := &Handler{DB: database, GPUWorkerHost: "worker"}
+	if !h.finishRenderAttempt(context.Background(), "worker", item.ID, unit, "finished", "") {
+		t.Fatal("completion blocked")
+	}
+	t.Setenv("TEST_CLEANUP_FAIL", "1")
+	h.retryPendingGPUJobLogs(context.Background())
+	saved, _ := database.GetGPUJobLog(unit)
+	if saved.Journal != "complete output" || !strings.HasPrefix(saved.Error, gpuLogCleanupPrefix) {
+		t.Fatalf("cleanup not retained for retry: %+v", saved)
+	}
+	before, _ := os.ReadFile(calls)
+	t.Setenv("TEST_CLEANUP_FAIL", "0")
+	h.retryPendingGPUJobLogs(context.Background())
+	after, _ := os.ReadFile(calls)
+	if strings.Count(string(before), "journalctl") != strings.Count(string(after), "journalctl") {
+		t.Fatal("cleanup retry re-read full journal")
+	}
+	saved, _ = database.GetGPUJobLog(unit)
+	if saved.Error != "" {
+		t.Fatalf("cleanup still pending: %s", saved.Error)
 	}
 }

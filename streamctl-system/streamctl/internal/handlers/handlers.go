@@ -923,6 +923,7 @@ type gpuWorkerView struct {
 }
 
 type gpuJobView struct {
+	Cached      bool // Historical state is never execution authority.
 	UnitName    string
 	RawPath     string
 	Host        string
@@ -974,18 +975,27 @@ func (h *Handler) gpuJobLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	host, err := h.gpuWorkerSSHHost(ctx)
+	var host string
+	var err error
+	savedArchive, archiveErr := h.DB.GetGPUJobLog(unit)
+	completeArchive := archiveErr == nil && isTerminalGPUJob(gpuJobViewFromDB(*savedArchive)) && strings.TrimSpace(savedArchive.Journal) != "" && (!strings.HasPrefix(savedArchive.Error, gpuLogPendingPrefix) || strings.HasPrefix(savedArchive.Error, gpuLogCleanupPrefix))
+	if completeArchive {
+		host = savedArchive.Host
+	} else {
+		host, err = h.gpuWorkerSSHHost(ctx)
+	}
 	job := gpuJobView{UnitName: unit}
 	cached := false
 	warning := ""
-	if err == nil {
+	if err == nil && !completeArchive {
 		job = h.gpuJob(ctx, host, unit, true)
-	} else {
+	} else if err != nil {
 		warning = "Worker unavailable. Showing saved logs."
 	}
-	if err != nil || strings.TrimSpace(job.Journal) == "" {
+	if completeArchive || err != nil || strings.TrimSpace(job.Journal) == "" {
 		if saved, dbErr := h.DB.GetGPUJobLog(unit); dbErr == nil {
 			job = gpuJobViewFromDB(*saved)
+			job.Cached = true
 			host = saved.Host
 			cached = true
 		}
@@ -995,7 +1005,7 @@ func (h *Handler) gpuJobLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if cached && warning == "" {
-		warning = "Showing saved logs; no live log output was available."
+		warning = "Saved log snapshot; this is not live worker state."
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	if r.URL.Query().Get("format") == "json" {
@@ -1066,33 +1076,25 @@ func (h *Handler) gpuStatus(ctx context.Context, worker gpuWorkerView) gpuStatus
 	}
 	status.Available = true
 	status.NvidiaSMI = strings.TrimSpace(nvidia)
-	unitsOut, err := remoteSSH(ctx, host, "systemctl list-units 'streamctl-gpu-*' --all --no-legend --plain 2>/dev/null || true")
+	unitsOut, err := remoteSSH(ctx, host, "systemctl list-units 'streamctl-gpu-*' --state=active,activating,deactivating --no-legend --plain 2>/dev/null || true")
 	if err != nil {
 		status.Error = fmt.Sprintf("GPU jobs unavailable: %v: %s", err, strings.TrimSpace(unitsOut))
 		return h.appendCachedGPUJobs(status)
 	}
 	units := parseGPUUnitList(unitsOut)
-	fileUnitsOut, fileUnitsErr := remoteSSH(ctx, host, "if [ -d /root/streamctl-gpu-jobs ]; then for d in /root/streamctl-gpu-jobs/streamctl-gpu-*; do [ -d \"$d\" ] && basename \"$d\"; done; fi")
-	if fileUnitsErr == nil {
-		units = append(units, parseGPUFileJobList(fileUnitsOut)...)
+	fileUnitsOut, fileUnitsErr := remoteSSH(ctx, host, "if [ -d /root/streamctl-gpu-jobs ]; then for d in /root/streamctl-gpu-jobs/streamctl-gpu-*; do if [ -d \"$d\" ] && [ \"$(cat \"$d/active\" 2>/dev/null)\" = running ]; then basename \"$d\"; fi; done; fi")
+	if fileUnitsErr != nil {
+		status.Error = "GPU file jobs unavailable: " + fileUnitsErr.Error()
+		return h.appendCachedGPUJobs(status)
 	}
+	units = append(units, parseGPUFileJobList(fileUnitsOut)...)
 	for _, unit := range dedupeGPUUnits(units) {
 		job := h.gpuJob(ctx, host, unit, false)
+		if job.Error != "" {
+			status.Error = appendGPUError(status.Error, fmt.Errorf("job %s: %s", unit, job.Error))
+		}
 		h.hydrateGPUJobFromCache(&job)
 		status.Jobs = append(status.Jobs, job)
-		if isTerminalGPUJob(job) {
-			full := h.gpuJob(ctx, host, unit, true)
-			h.hydrateGPUJobFromCache(&full)
-			if _, err := h.retainGPUJobLog(ctx, host, full); err != nil {
-				log.Printf("saving terminal GPU job %s failed: %v", unit, err)
-				continue
-			}
-			h.destroyManagedGPUAfterTerminalJob(ctx, full)
-			go h.dispatchGPUQueueOnce(context.Background())
-		}
-		if len(status.Jobs) >= 10 {
-			break
-		}
 	}
 	return h.appendCachedGPUJobs(status)
 }
@@ -1133,7 +1135,9 @@ func (h *Handler) appendCachedGPUJobs(status gpuStatusView) gpuStatusView {
 		if seen[cachedJob.UnitName] {
 			continue
 		}
-		status.Jobs = append(status.Jobs, gpuJobViewFromDB(cachedJob))
+		cachedView := gpuJobViewFromDB(cachedJob)
+		cachedView.Cached = true
+		status.Jobs = append(status.Jobs, cachedView)
 		seen[cachedJob.UnitName] = true
 		if len(status.Jobs) >= 10 {
 			break
@@ -1270,6 +1274,9 @@ func isTerminalGPUJob(job gpuJobView) bool {
 }
 
 func isBlockingGPUJob(job gpuJobView) bool {
+	if job.Cached {
+		return false
+	}
 	state := strings.TrimSpace(job.ActiveState)
 	if state == "" || state == "queued" {
 		return false
@@ -1301,6 +1308,7 @@ func (h *Handler) gpuQueueDispatcher() {
 	defer ticker.Stop()
 	for {
 		h.dispatchGPUQueueOnce(context.Background())
+		h.retryPendingGPUJobLogs(context.Background())
 		<-ticker.C
 	}
 }
@@ -1308,6 +1316,8 @@ func (h *Handler) gpuQueueDispatcher() {
 func (h *Handler) dispatchGPUQueueOnce(ctx context.Context) {
 	h.gpuQueueMu.Lock()
 	defer h.gpuQueueMu.Unlock()
+	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
 	if !h.gpuWorkerConfigured() {
 		return
 	}
@@ -1386,8 +1396,18 @@ func (h *Handler) destroyManagedGPUAfterTerminalJob(ctx context.Context, job gpu
 	}
 	if _, render := renderJobIDFromUnit(job.UnitName); render {
 		saved, err := h.DB.GetGPUJobLog(job.UnitName)
-		if err != nil || strings.TrimSpace(saved.Journal) == "" {
+		if err != nil || strings.TrimSpace(saved.Journal) == "" || strings.HasPrefix(saved.Error, gpuLogPendingPrefix) {
 			log.Printf("GPU worker cleanup skipped after job %s: render log has not been retained", job.UnitName)
+			return
+		}
+	}
+	// Pending archives pin their worker/workspaces, not the execution queue.
+	logs, err := h.DB.PendingGPUJobLogs(job.Host, gpuLogPendingPrefix)
+	if err != nil {
+		return
+	}
+	for _, saved := range logs {
+		if strings.HasPrefix(saved.Error, gpuLogPendingPrefix) && (job.Host == "" || saved.Host == job.Host) {
 			return
 		}
 	}
@@ -1445,8 +1465,11 @@ func (h *Handler) destroyManagedGPUAfterTerminalJob(ctx context.Context, job gpu
 }
 
 func remoteSSH(ctx context.Context, host, remoteCommand string) (string, error) {
-	args := sshArgsWithOptions(host, remoteCommand, "-o", "ConnectTimeout=5")
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	args := sshArgsWithOptions(host, remoteCommand, "-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=2")
 	cmd := exec.CommandContext(ctx, "ssh", args...)
+	cmd.WaitDelay = 2 * time.Second
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }

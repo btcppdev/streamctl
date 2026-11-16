@@ -291,3 +291,20 @@ Media preparation shows its reported stage and percentage; renders link to logs
 without inventing a percentage. Saved logs remain available after a worker is
 removed and are identified as saved output. Disable **Follow latest output** to
 read earlier output without losing your scroll position.
+
+Worker execution and saved log history are separate: archived running snapshots
+never block a replacement worker. Confirmed completion releases the queue while
+full log archival retries in the background. Pending archives retain the worker
+and attempt workspace; completed archives are served from the database without
+re-reading the worker. A failed archive read does not hold up subsequent jobs.
+
+Controller SSH commands have a 30-second deadline (shorter caller deadlines win),
+and queue dispatch passes are bounded to 90 seconds. Render-worker metadata and
+validation commands have a 120-second deadline. Transfers have a 15-second
+connection timeout, a 90-second idle timeout, and a configurable total deadline
+(`STREAMCTL_TRANSFER_TIMEOUT_SECONDS`, default 1800). Whisper download and model
+initialization run in a separate process with a configurable deadline
+(`STREAMCTL_WHISPER_TIMEOUT_SECONDS`, default 300); encoding then uses the cached
+model offline. Timeout handling terminates the operation's process group. These
+worker environment overrides must be set on the worker; the existing 48-hour
+whole-render ceiling remains in place.

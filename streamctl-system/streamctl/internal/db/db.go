@@ -857,10 +857,23 @@ func (db *DB) ListGPUJobLogs(limit int) ([]GPUJobLog, error) {
 	if limit <= 0 {
 		limit = 20
 	}
-	rows, err := db.Query(`
-		SELECT unit_name, raw_path, host, description, active_state, sub_state, result, journal, error, created_at, updated_at
-		FROM gpu_job_logs ORDER BY updated_at DESC LIMIT ?
-	`, limit)
+	return db.queryGPUJobLogs(`SELECT unit_name, raw_path, host, description, active_state, sub_state, result, journal, error, created_at, updated_at
+        FROM gpu_job_logs ORDER BY updated_at DESC LIMIT ?`, limit)
+}
+
+func (db *DB) ClearGPUJobLogError(unit string) error {
+	_, err := db.Exec("UPDATE gpu_job_logs SET error = '' WHERE unit_name = ?", unit)
+	return err
+}
+
+// Pending archives are independent of the limited recent-job dashboard.
+func (db *DB) PendingGPUJobLogs(host, prefix string) ([]GPUJobLog, error) {
+	return db.queryGPUJobLogs(`SELECT unit_name, raw_path, host, description, active_state, sub_state, result, journal, error, created_at, updated_at
+        FROM gpu_job_logs WHERE host = ? AND substr(error, 1, length(?)) = ? ORDER BY updated_at ASC`, host, prefix, prefix)
+}
+
+func (db *DB) queryGPUJobLogs(query string, args ...any) ([]GPUJobLog, error) {
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
