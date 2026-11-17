@@ -18,6 +18,30 @@ type podCreationTransport func(*http.Request) (*http.Response, error)
 
 func (f podCreationTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
+func TestWatchdogPauseBlocksDispatchAndManualProvisioning(t *testing.T) {
+	root := t.TempDir()
+	state := filepath.Join(root, "watchdog.json")
+	if err := os.WriteFile(state, []byte(`{"pause_reason":"no completions for 2 hours"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "token"), []byte("test-token"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	h := &Handler{GPUWatchdogStateFile: state, RunPodTokenFile: filepath.Join(root, "token")}
+	previous := http.DefaultTransport
+	http.DefaultTransport = podCreationTransport(func(r *http.Request) (*http.Response, error) {
+		t.Errorf("paused controller contacted provider: %s", r.URL)
+		return nil, errors.New("unexpected request")
+	})
+	t.Cleanup(func() { http.DefaultTransport = previous })
+	if err := h.ensureRunPodWorker(context.Background(), "test-gpu"); err == nil {
+		t.Fatal("manual creation bypassed watchdog")
+	}
+	// No database is needed: the pause must be checked before reconciliation can
+	// requeue old attempts or recreate a terminated worker.
+	h.dispatchGPUQueueOnce(context.Background())
+}
+
 func TestConcurrentWorkerCreationReconcilesLostResponse(t *testing.T) {
 	root := t.TempDir()
 	for name, content := range map[string]string{"token": "test-token", "key.pub": "ssh-ed25519 test", "rclone": "[test]\ntype=local\n"} {

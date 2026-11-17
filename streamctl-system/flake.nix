@@ -239,7 +239,25 @@
             gpuPreserveWorker = lib.mkOption {
               type = lib.types.bool;
               default = false;
-              description = "Diagnostic mode: disable automatic worker destruction and retain failed render workspaces. Workers remain billable until manually destroyed.";
+              description = "Diagnostic mode: preserve workspaces and skip normal worker cleanup. The independent RunPod spending watchdog still applies.";
+            };
+
+            gpuWatchdogEnable = lib.mkOption {
+              type = lib.types.bool;
+              default = cfg.runpodTokenFile != "" && cfg.gpuWorkerHost == "";
+              description = "Independently terminate idle/stalled RunPod workers and pause the queue until explicitly resumed.";
+            };
+
+            gpuWatchdogIdleMinutes = lib.mkOption {
+              type = lib.types.ints.positive;
+              default = 15;
+              description = "Minutes with no queued/running GPU jobs before the watchdog terminates the worker.";
+            };
+
+            gpuWatchdogCompletionMinutes = lib.mkOption {
+              type = lib.types.ints.positive;
+              default = 240;
+              description = "Maximum minutes without a successful GPU job completion; applies even to running jobs and diagnostic preservation.";
             };
 
             remote = lib.mkOption {
@@ -299,6 +317,10 @@
 
           config = lib.mkIf cfg.enable {
             assertions = [
+              {
+                assertion = !cfg.gpuWatchdogEnable || (cfg.runpodTokenFile != "" && cfg.gpuWorkerHost == "");
+                message = "The GPU spending watchdog requires a managed RunPod worker and no external gpuWorkerHost";
+              }
               {
                 assertion = (cfg.btcppOAuthClientID == "") == (cfg.btcppOAuthClientSecretFile == "");
                 message = "services.streamctl.btcppOAuthClientID and btcppOAuthClientSecretFile must be configured together";
@@ -376,6 +398,7 @@
                     -gpu-worker-user=${cfg.gpuWorkerUser} \
                     -gpu-destroy-after-job=${lib.boolToString cfg.gpuDestroyAfterJob} \
                     -gpu-preserve-worker=${lib.boolToString cfg.gpuPreserveWorker} \
+                    ${lib.optionalString cfg.gpuWatchdogEnable "-gpu-watchdog-state-file=${cfg.dataDir}/gpu-watchdog.json \\"}
                     -remote=${cfg.remote} \
                     -rclone-config=${cfg.rcloneConfigFile} \
                     -notify-email=${cfg.notificationEmail} \
@@ -426,6 +449,40 @@
                 PrivateTmp = true;
                 NoNewPrivileges = true;
                 ReadWritePaths = [ cfg.cacheDir cfg.hlsDir ];
+              };
+            };
+
+            systemd.services.streamctl-gpu-watchdog = lib.mkIf cfg.gpuWatchdogEnable {
+              description = "Terminate idle or stalled RunPod GPU workers";
+              after = [ "network-online.target" "streamctl.service" ];
+              wants = [ "network-online.target" ];
+              serviceConfig = {
+                Type = "oneshot";
+                User = "root";
+                ExecStart = lib.escapeShellArgs [
+                  "${pkg}/bin/cmd" "gpu-watchdog"
+                  "-db" "${cfg.dataDir}/streamctl.db"
+                  "-state-file" "${cfg.dataDir}/gpu-watchdog.json"
+                  "-runpod-token-file" cfg.runpodTokenFile
+                  "-runpod-pod-name" cfg.runpodPodName
+                  "-idle-timeout" "${toString cfg.gpuWatchdogIdleMinutes}m"
+                  "-completion-timeout" "${toString cfg.gpuWatchdogCompletionMinutes}m"
+                ];
+                TimeoutStartSec = "3min";
+                ProtectSystem = "strict";
+                ProtectHome = true;
+                PrivateTmp = true;
+                NoNewPrivileges = true;
+                ReadWritePaths = [ cfg.dataDir ];
+              };
+            };
+
+            systemd.timers.streamctl-gpu-watchdog = lib.mkIf cfg.gpuWatchdogEnable {
+              wantedBy = [ "timers.target" ];
+              timerConfig = {
+                OnBootSec = "1min";
+                OnUnitInactiveSec = "1min";
+                AccuracySec = "10s";
               };
             };
 

@@ -28,6 +28,7 @@ import (
 	"streamctl/internal/btcppoauth"
 	"streamctl/internal/db"
 	"streamctl/internal/doclient"
+	"streamctl/internal/gpuwatchdog"
 	"streamctl/internal/nostrpub"
 	"streamctl/internal/probe"
 	"streamctl/internal/runpodclient"
@@ -50,37 +51,38 @@ const (
 )
 
 type Handler struct {
-	DB                  *db.DB
-	Secret              string
-	VideoDir            string
-	CacheDir            string
-	HLSDir              string
-	Remote              string
-	RcloneConfig        string
-	NostrKeyDir         string
-	NostrKeyOwner       string
-	GPUWorkerHost       string
-	GPUWorkerSSHKey     string
-	RenderWorkerCommand string
-	RenderOutputDir     string
-	DOTokenFile         string
-	RunPodTokenFile     string
-	RunPodPodName       string
-	RunPodGPUType       string
-	RunPodImage         string
-	RunPodCloudType     string
-	GPUDropletName      string
-	GPUDropletRegion    string
-	GPUDropletSize      string
-	GPUDropletImage     string
-	GPUSSHKeyName       string
-	GPUWorkerUser       string
-	GPUDestroyAfterJob  bool
-	GPUPreserveWorker   bool
-	Systemd             *systemd.Manager
-	OAuth               *btcppoauth.Client
-	BTCPP               productionCandidatesClient
-	BTCPPBaseURL        string
+	DB                   *db.DB
+	Secret               string
+	VideoDir             string
+	CacheDir             string
+	HLSDir               string
+	Remote               string
+	RcloneConfig         string
+	NostrKeyDir          string
+	NostrKeyOwner        string
+	GPUWorkerHost        string
+	GPUWorkerSSHKey      string
+	RenderWorkerCommand  string
+	RenderOutputDir      string
+	DOTokenFile          string
+	RunPodTokenFile      string
+	RunPodPodName        string
+	RunPodGPUType        string
+	RunPodImage          string
+	RunPodCloudType      string
+	GPUDropletName       string
+	GPUDropletRegion     string
+	GPUDropletSize       string
+	GPUDropletImage      string
+	GPUSSHKeyName        string
+	GPUWorkerUser        string
+	GPUDestroyAfterJob   bool
+	GPUPreserveWorker    bool
+	GPUWatchdogStateFile string
+	Systemd              *systemd.Manager
+	OAuth                *btcppoauth.Client
+	BTCPP                productionCandidatesClient
+	BTCPPBaseURL         string
 
 	funcs       template.FuncMap
 	gpuQueueMu  sync.Mutex
@@ -163,6 +165,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/worker/media/requeue", h.mutation(http.HandlerFunc(h.productionProxyRequeue)))
 	mux.Handle("/gpu-worker/create", h.mutation(http.HandlerFunc(h.gpuWorkerCreate)))
 	mux.Handle("/gpu-worker/destroy", h.mutation(http.HandlerFunc(h.gpuWorkerDestroy)))
+	mux.Handle("/gpu-worker/resume", h.mutation(http.HandlerFunc(h.gpuWorkerResume)))
 	mux.Handle("/gpu-worker/logs/", h.auth(http.HandlerFunc(h.gpuJobLogs)))
 	mux.Handle("/render", h.auth(http.HandlerFunc(h.renderJobs)))
 	mux.Handle("/render/create", h.mutation(http.HandlerFunc(h.renderJobCreate)))
@@ -900,24 +903,25 @@ func (h *Handler) resyncStreamsUsingEndpoint(epID int64) error {
 // ---------- Shared GPU worker ----------
 
 type gpuWorkerView struct {
-	Managed    bool
-	Configured bool
-	Provider   string
-	ID         int64
-	ExternalID string
-	Name       string
-	Status     string
-	RawStatus  string
-	IP         string
-	SSHHost    string
-	GPUType    string
-	Image      string
-	Region     string
-	CloudType  string
-	CostHourly float64
-	CreatedAt  string
-	MachineID  string
-	Error      string
+	Managed     bool
+	Configured  bool
+	Provider    string
+	ID          int64
+	ExternalID  string
+	Name        string
+	Status      string
+	RawStatus   string
+	IP          string
+	SSHHost     string
+	GPUType     string
+	Image       string
+	Region      string
+	CloudType   string
+	CostHourly  float64
+	CreatedAt   string
+	MachineID   string
+	PauseReason string
+	Error       string
 }
 
 type gpuJobView struct {
@@ -1321,6 +1325,16 @@ func (h *Handler) dispatchGPUQueueOnce(ctx context.Context) {
 	if !h.gpuWorkerConfigured() {
 		return
 	}
+	unlock, err := gpuwatchdog.Lock(ctx, h.GPUWatchdogStateFile)
+	if err != nil {
+		log.Printf("GPU watchdog lock: %v", err)
+		return
+	}
+	defer unlock()
+	if err := gpuwatchdog.Check(h.GPUWatchdogStateFile); err != nil {
+		log.Printf("GPU queue: %v", err)
+		return
+	}
 	worker := h.gpuWorkerView(ctx)
 	if worker.Error != "" {
 		log.Printf("GPU queue waiting for worker: %s", worker.Error)
@@ -1644,6 +1658,11 @@ func (h *Handler) gpuWorkerView(ctx context.Context) gpuWorkerView {
 		Configured: h.gpuWorkerConfigured(),
 		SSHHost:    strings.TrimSpace(h.GPUWorkerHost),
 	}
+	if state, err := gpuwatchdog.Read(h.GPUWatchdogStateFile); err != nil {
+		view.PauseReason = err.Error()
+	} else {
+		view.PauseReason = state.PauseReason
+	}
 	if !view.Managed {
 		if strings.TrimSpace(view.SSHHost) != "" {
 			view.Provider = "external"
@@ -1918,6 +1937,12 @@ func (h *Handler) withManagedWorkerSSHReadiness(ctx context.Context, view gpuWor
 }
 
 func (h *Handler) runpodWorkerCreate(w http.ResponseWriter, r *http.Request) {
+	unlock, err := gpuwatchdog.Lock(r.Context(), h.GPUWatchdogStateFile)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	defer unlock()
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -1931,6 +1956,9 @@ func (h *Handler) runpodWorkerCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) ensureRunPodWorker(ctx context.Context, gpuType string) error {
+	if err := gpuwatchdog.Check(h.GPUWatchdogStateFile); err != nil {
+		return err
+	}
 	// Manual creation and queue dispatch must share the list-before-create
 	// check; RunPod names are not unique and concurrent checks can race.
 	h.gpuCreateMu.Lock()

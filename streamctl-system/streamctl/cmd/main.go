@@ -22,6 +22,12 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "gpu-watchdog" {
+		if err := runGPUWatchdog(os.Args[2:]); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "stream-check" {
 		if err := runStreamCheck(os.Args[2:]); err != nil {
 			log.Fatal(err)
@@ -94,6 +100,7 @@ func main() {
 		gpuWorkerUser       = flag.String("gpu-worker-user", "root", "SSH user for managed GPU Droplets")
 		gpuDestroyAfterJob  = flag.Bool("gpu-destroy-after-job", false, "destroy managed GPU worker after a successful GPU job")
 		gpuPreserveWorker   = flag.Bool("gpu-preserve-worker", false, "diagnostic mode: disable automatic worker destruction and retain failed render workspaces")
+		gpuWatchdogState    = flag.String("gpu-watchdog-state-file", "", "persistent spending watchdog state; blocks dispatch after a cutoff")
 		unitDir             = flag.String("unit-dir", "/etc/systemd/system", "directory for generated systemd units")
 		unitPrefix          = flag.String("unit-prefix", "streamctl-", "prefix for generated systemd unit names")
 		runUser             = flag.String("run-user", "streamctl", "user to run streams as")
@@ -185,36 +192,37 @@ func main() {
 	}
 
 	h := &handlers.Handler{
-		DB:                  database,
-		Secret:              secret,
-		VideoDir:            *videoDir,
-		CacheDir:            *cacheDir,
-		HLSDir:              *hlsDir,
-		Remote:              *remote,
-		RcloneConfig:        *rcloneCfg,
-		NostrKeyDir:         *nostrKeyDir,
-		NostrKeyOwner:       *runUser,
-		GPUWorkerHost:       strings.TrimSpace(*gpuWorkerHost),
-		GPUWorkerSSHKey:     strings.TrimSpace(*gpuWorkerSSHKey),
-		RenderWorkerCommand: strings.TrimSpace(*renderWorkerCommand),
-		RenderOutputDir:     strings.TrimRight(strings.TrimSpace(*renderOutputDir), "/"),
-		DOTokenFile:         strings.TrimSpace(*doTokenFile),
-		RunPodTokenFile:     strings.TrimSpace(*runpodTokenFile),
-		RunPodPodName:       strings.TrimSpace(*runpodPodName),
-		RunPodGPUType:       strings.TrimSpace(*runpodGPUType),
-		RunPodImage:         strings.TrimSpace(*runpodImage),
-		RunPodCloudType:     strings.TrimSpace(*runpodCloudType),
-		GPUDropletName:      strings.TrimSpace(*gpuDropletName),
-		GPUDropletRegion:    strings.TrimSpace(*gpuDropletRegion),
-		GPUDropletSize:      strings.TrimSpace(*gpuDropletSize),
-		GPUDropletImage:     strings.TrimSpace(*gpuDropletImage),
-		GPUSSHKeyName:       strings.TrimSpace(*gpuSSHKeyName),
-		GPUWorkerUser:       strings.TrimSpace(*gpuWorkerUser),
-		GPUDestroyAfterJob:  *gpuDestroyAfterJob,
-		GPUPreserveWorker:   *gpuPreserveWorker,
-		Systemd:             sysd,
-		OAuth:               oauthClient,
-		BTCPPBaseURL:        strings.TrimRight(strings.TrimSpace(*btcppAPIBase), "/"),
+		DB:                   database,
+		Secret:               secret,
+		VideoDir:             *videoDir,
+		CacheDir:             *cacheDir,
+		HLSDir:               *hlsDir,
+		Remote:               *remote,
+		RcloneConfig:         *rcloneCfg,
+		NostrKeyDir:          *nostrKeyDir,
+		NostrKeyOwner:        *runUser,
+		GPUWorkerHost:        strings.TrimSpace(*gpuWorkerHost),
+		GPUWorkerSSHKey:      strings.TrimSpace(*gpuWorkerSSHKey),
+		RenderWorkerCommand:  strings.TrimSpace(*renderWorkerCommand),
+		RenderOutputDir:      strings.TrimRight(strings.TrimSpace(*renderOutputDir), "/"),
+		DOTokenFile:          strings.TrimSpace(*doTokenFile),
+		RunPodTokenFile:      strings.TrimSpace(*runpodTokenFile),
+		RunPodPodName:        strings.TrimSpace(*runpodPodName),
+		RunPodGPUType:        strings.TrimSpace(*runpodGPUType),
+		RunPodImage:          strings.TrimSpace(*runpodImage),
+		RunPodCloudType:      strings.TrimSpace(*runpodCloudType),
+		GPUDropletName:       strings.TrimSpace(*gpuDropletName),
+		GPUDropletRegion:     strings.TrimSpace(*gpuDropletRegion),
+		GPUDropletSize:       strings.TrimSpace(*gpuDropletSize),
+		GPUDropletImage:      strings.TrimSpace(*gpuDropletImage),
+		GPUSSHKeyName:        strings.TrimSpace(*gpuSSHKeyName),
+		GPUWorkerUser:        strings.TrimSpace(*gpuWorkerUser),
+		GPUDestroyAfterJob:   *gpuDestroyAfterJob,
+		GPUPreserveWorker:    *gpuPreserveWorker,
+		GPUWatchdogStateFile: strings.TrimSpace(*gpuWatchdogState),
+		Systemd:              sysd,
+		OAuth:                oauthClient,
+		BTCPPBaseURL:         strings.TrimRight(strings.TrimSpace(*btcppAPIBase), "/"),
 	}
 	// Keep the interface nil when no API token is configured.
 	if btcppAPIClient != nil {

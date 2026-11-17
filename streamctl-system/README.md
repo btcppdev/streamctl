@@ -317,20 +317,50 @@ an OOM kill during the render; a missing counter is reported as unavailable,
 not zero. Kernel messages are collected when permitted.
 
 For a supervised diagnostic retry, set `services.streamctl.gpuPreserveWorker =
-true` (CLI `-gpu-preserve-worker=true`). This disables all automatic worker
-destruction, including cleanup triggered by older jobs, and preserves failed
-render workspaces. Manual worker destruction remains available. **Workers remain
-billable while preserved**; inspect the evidence, destroy the worker when done,
-and turn this diagnostic setting off. Successful uploads still clean up their
-attempt workspace. Run monitor regressions with `python3 -B -m unittest discover
+true` (CLI `-gpu-preserve-worker=true`). This disables normal worker cleanup,
+including cleanup triggered by older jobs, and preserves failed render
+workspaces. The independent spending watchdog still applies. Manual worker
+destruction remains available. **Workers remain billable while preserved**;
+inspect the evidence, destroy the worker when done, and turn this diagnostic
+setting off. Successful uploads still clean up their attempt workspace. Run monitor regressions with `python3 -B -m unittest discover
 -s streamctl/internal/handlers/worker -p test_render_diagnostics.py -v`.
+
+Managed RunPod deployments enable `streamctl-gpu-watchdog.timer` by default.
+It checks about once a minute, independently of the web service. The defaults
+terminate the managed pod after **15 minutes with no queued/running jobs**, or
+**240 minutes without a successful render, preview, or transcode completion**.
+These are `gpuWatchdogIdleMinutes` and `gpuWatchdogCompletionMinutes`; the latter
+is a completion deadline, not a check of FFmpeg progress. A healthy individual
+job exceeding it will also be interrupted, so increase it explicitly for longer
+jobs. Successful jobs extend the deadline for a healthy batch. Log writes,
+failed attempts, pending log archives, and diagnostic preservation do not.
+
+Before termination, the watchdog durably pauses dispatch and provisioning in
+`/var/lib/streamctl/gpu-watchdog.json`. It retries failed termination requests,
+including stopped pods with billable storage, and only manages pods with this
+controller's configured name. Interrupted jobs become failed; queued jobs and
+controller-side log checkpoints are retained. Worker-local files are lost when
+the pod is terminated. Restarting the service does not clear the pause or reset
+the observed deadlines. On the Worker page, review the cutoff reason and select
+**Resume GPU queue** to allow another paid worker; retry interrupted jobs
+separately. Resume is blocked until the previous managed pods are gone.
+
+Inspect `journalctl -u streamctl-gpu-watchdog` and
+`systemctl list-timers streamctl-gpu-watchdog.timer` to verify protection. The
+watchdog is a fallback to normal shutdown after the queue drains, not a dollar
+budget: API/network outages can delay termination, and healthy batches continue
+to accrue charges. It requires the controller host and its timer to be running.
+External workers and DigitalOcean workers are outside this watchdog's scope.
+Run regressions with `go test ./internal/gpuwatchdog ./internal/db
+./internal/handlers` from `streamctl/`.
 
 RunPod installation is
 limited to 20 minutes, with logs at `/root/streamctl-worker-setup.log`; a failed
 setup never becomes ready. Inspect provider logs if installation failed before
-SSH was installed. Failed setup does not automatically destroy the pod: inspect
-and **terminate it promptly** to stop charges. Runtime limits stop jobs, not
-provider billing; do not rely on them as a spending cap.
+SSH was installed. The watchdog's completion deadline also bounds failed setup
+when work is queued; **terminate it promptly** to avoid waiting for the cutoff.
+Without the watchdog, failed setup does not automatically destroy the pod.
+Worker-side runtime limits stop jobs, not provider billing.
 
 The controller uses RunPod REST API v2 (`https://api.runpod.io/v2`); v1 was
 retired in November 2026. Worker discovery follows pagination and fetches the

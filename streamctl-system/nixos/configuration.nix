@@ -73,8 +73,10 @@
     digitalOceanTokenFile = "/var/lib/streamctl/digitalocean-token";
     runpodTokenFile = "/var/lib/streamctl/runpod-token";
     gpuDestroyAfterJob = true;
-    # Keep this diagnostic retry inspectable; disable after the render is resolved.
-    gpuPreserveWorker = true;
+    gpuPreserveWorker = false;
+    gpuWatchdogEnable = true;
+    gpuWatchdogIdleMinutes = 15;
+    gpuWatchdogCompletionMinutes = 240;
     # videoDir defaults to /var/lib/streamctl/videos — that's where you scp event files.
     # cacheDir defaults to /var/lib/streamctl/cache — remote clips are prefetched there.
   };
