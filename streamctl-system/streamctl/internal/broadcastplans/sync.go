@@ -62,6 +62,9 @@ func (s *Syncer) Poll(ctx context.Context, now time.Time) error {
 			errs = append(errs, fmt.Errorf("recording %s: %w", plan.RecordingID, err))
 		}
 	}
+	if err := s.publishCalendar(ctx, now); err != nil {
+		errs = append(errs, fmt.Errorf("publish shared calendar: %w", err))
+	}
 	return errors.Join(errs...)
 }
 
