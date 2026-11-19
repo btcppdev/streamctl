@@ -3,6 +3,7 @@ package broadcastplans
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"streamctl/internal/btcppclient"
@@ -38,7 +39,7 @@ func (s *Syncer) publishCalendar(ctx context.Context, now time.Time) error {
 			}
 		}
 		if v.At == nil && stream.ScheduleType == "once" {
-			if at, e := time.Parse("2006-01-02 15:04:05 MST", stream.OnCalendar); e == nil && at.After(now) && at.Location().String() == "UTC" {
+			if at, ok := oneOffCalendarTime(stream.OnCalendar, time.Local); ok {
 				v.At = &at
 			}
 		}
@@ -49,4 +50,25 @@ func (s *Syncer) publishCalendar(ctx context.Context, now time.Time) error {
 		snapshot = append(snapshot, v)
 	}
 	return client.PutPublishingStreams(ctx, snapshot)
+}
+
+// Keep a one-off schedule's original date after its timer expires. A missing
+// timezone uses the streamer's local timezone, just like systemd OnCalendar.
+func oneOffCalendarTime(raw string, local *time.Location) (time.Time, bool) {
+	raw = strings.TrimSpace(raw)
+	for _, layout := range []string{time.RFC3339, "2006-01-02 15:04:05", "2006-01-02 15:04"} {
+		if at, err := time.ParseInLocation(layout, raw, local); err == nil {
+			return at.UTC(), true
+		}
+	}
+	if i := strings.LastIndexByte(raw, ' '); i >= 0 {
+		if zone, err := time.LoadLocation(raw[i+1:]); err == nil {
+			for _, layout := range []string{"2006-01-02 15:04:05", "2006-01-02 15:04"} {
+				if at, err := time.ParseInLocation(layout, raw[:i], zone); err == nil {
+					return at.UTC(), true
+				}
+			}
+		}
+	}
+	return time.Time{}, false
 }
